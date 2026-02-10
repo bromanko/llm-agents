@@ -11,14 +11,16 @@
  *   ⌫  compacting  — context compaction in progress
  *   ✓  done        — agent finished
  *
- * Uses tmux escape sequences (\033k...\033\\) written directly to the
- * TTY, so it works both locally inside tmux and over SSH into VMs.
+ * Primary path uses `tmux rename-window` for reliable updates.
+ * Falls back to tmux escape sequences (\033k...\033\\) written to the TTY,
+ * so it still works in environments where tmux CLI invocation fails.
  * Requires `allow-rename on` in tmux config.
  *
  * Configuration via environment variables:
  *   TMUX_TITLES_POSITION — "suffix" (default) or "prefix"
  */
 
+import { spawnSync } from "node:child_process";
 import { openSync, writeSync, closeSync } from "node:fs";
 import { basename } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -47,6 +49,17 @@ function writeToTty(data: string): void {
   }
 }
 
+function renameWindowWithTmux(title: string): boolean {
+  try {
+    const result = spawnSync("tmux", ["rename-window", title], {
+      stdio: "ignore",
+    });
+    return !result.error && result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 function setTitle(icon: string, cwd: string): void {
   if (!inTmux()) return;
 
@@ -55,12 +68,18 @@ function setTitle(icon: string, cwd: string): void {
   const title =
     position === "prefix" ? `${icon} ${base}` : `${base} ${icon}`;
 
-  writeToTty(`\x1bk${title}\x1b\\`);
+  // Primary path: ask tmux directly to rename the current window.
+  // Fallback: write tmux title escape sequence to TTY.
+  if (!renameWindowWithTmux(title)) {
+    writeToTty(`\x1bk${title}\x1b\\`);
+  }
 }
 
 function clearTitle(): void {
   if (!inTmux()) return;
-  writeToTty(`\x1bkbash\x1b\\`);
+  if (!renameWindowWithTmux("bash")) {
+    writeToTty(`\x1bkbash\x1b\\`);
+  }
 }
 
 const TOOL_ICONS: Record<string, string> = {
