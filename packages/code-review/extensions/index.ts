@@ -15,7 +15,7 @@
  *   4. Parses structured findings from LLM output
  *   5. Presents findings one-at-a-time in an inline TUI
  *   6. User picks: Fix / Fix with instructions / Skip / Stop
- *   7. "Fix" sends a targeted user message and waits for the agent
+ *   7. "Fix" queues targeted follow-up user messages while you keep reviewing
  */
 
 import { complete, type UserMessage } from "@mariozechner/pi-ai";
@@ -30,6 +30,7 @@ import {
 import * as fs from "node:fs";
 
 import { type Finding, parseFindings } from "../lib/parser.ts";
+import { notifyQueueSummary, processFindingActions } from "../lib/fix-flow.js";
 import {
   discoverReviewSkills,
   filterSkills,
@@ -175,35 +176,23 @@ export default function (pi: ExtensionAPI) {
         "info",
       );
 
-      // Iterate through findings one by one
-      for (let i = 0; i < allFindings.length; i++) {
-        const finding = allFindings[i];
+      const result = await processFindingActions({
+        pi,
+        ctx,
+        findings: allFindings,
+        showFinding: (finding: Finding, index: number, total: number) =>
+          showFinding(ctx, finding, index, total),
+        buildFixMessage,
+      });
 
-        const action = await showFinding(ctx, finding, i, allFindings.length);
-
-        if (action.type === "stop") {
-          ctx.ui.notify(
-            `Stopped at finding ${i + 1}/${allFindings.length}`,
-            "info",
-          );
-          break;
-        }
-
-        if (action.type === "skip") {
-          continue;
-        }
-
-        if (action.type === "fix" || action.type === "fix-custom") {
-          const message = buildFixMessage(
-            finding,
-            action.type === "fix-custom" ? action.instructions : undefined,
-          );
-
-          // Send the fix request and wait for the agent to finish
-          pi.sendUserMessage(message);
-          await ctx.waitForIdle();
-        }
+      if (result.stoppedAt !== null) {
+        ctx.ui.notify(
+          `Stopped at finding ${result.stoppedAt + 1}/${allFindings.length}`,
+          "info",
+        );
       }
+
+      notifyQueueSummary(ctx, result);
 
       ctx.ui.notify("Review complete", "info");
     },
