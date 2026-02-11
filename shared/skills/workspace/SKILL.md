@@ -158,18 +158,31 @@ jj log -r 'ancestors(<name>@) & mutable() & ~ancestors(default@)' --no-graph
 
 Count the workspace-specific commits.
 
+### Step 3b: Commit any uncommitted workspace changes
+
+Before merging, check whether the workspace working copy has uncommitted changes:
+
+```bash
+cd <workspace-path>
+jj diff --stat
+```
+
+If there are uncommitted changes, commit them so nothing is lost:
+
+```bash
+jj commit -m "workspace <name>: uncommitted changes"
+cd <repo-root>
+```
+
+Then re-run the Step 3 analysis to include the new commit in the count.
+
 ### Step 4: Merge strategy
 
-- **No workspace-specific commits** (only uncommitted changes): First commit from within the workspace directory, then squash:
-  ```bash
-  cd <workspace-path>
-  jj commit -m "workspace <name> changes"
-  cd <repo-root>
-  jj squash -r <change-id>
-  ```
-- **Single commit**: Squash it:
+- **No workspace-specific commits**: Nothing to merge. Proceed to cleanup.
+- **Single commit**: Squash it, then abandon the emptied commit:
   ```bash
   jj squash -r <change-id>
+  jj abandon <change-id>
   ```
 - **Multiple commits**: Rebase them onto the default workspace's parent:
   ```bash
