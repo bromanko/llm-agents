@@ -160,26 +160,36 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      const dedupedFindings = deduplicateFindings(allFindings);
+
       // Sort: HIGH first, then MEDIUM, then LOW
       const severityOrder: Record<string, number> = {
         HIGH: 0,
         MEDIUM: 1,
         LOW: 2,
       };
-      allFindings.sort(
+      dedupedFindings.sort(
         (a, b) =>
           (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3),
       );
 
+      const duplicateCount = allFindings.length - dedupedFindings.length;
+      if (duplicateCount > 0) {
+        ctx.ui.notify(
+          `Merged ${duplicateCount} duplicate finding${duplicateCount > 1 ? "s" : ""} across review types.`,
+          "info",
+        );
+      }
+
       ctx.ui.notify(
-        `Found ${allFindings.length} issue${allFindings.length > 1 ? "s" : ""}. Let's go through them.`,
+        `Found ${dedupedFindings.length} issue${dedupedFindings.length > 1 ? "s" : ""}. Let's go through them.`,
         "info",
       );
 
       const result = await processFindingActions({
         pi,
         ctx,
-        findings: allFindings,
+        findings: dedupedFindings,
         showFinding: (finding: Finding, index: number, total: number) =>
           showFinding(ctx, finding, index, total),
         buildFixMessage,
@@ -187,7 +197,7 @@ export default function (pi: ExtensionAPI) {
 
       if (result.stoppedAt !== null) {
         ctx.ui.notify(
-          `Stopped at finding ${result.stoppedAt + 1}/${allFindings.length}`,
+          `Stopped at finding ${result.stoppedAt + 1}/${dedupedFindings.length}`,
           "info",
         );
       }
@@ -271,11 +281,13 @@ async function runReviews(
           const skillContent = fs.readFileSync(skill.path, "utf-8");
           const apiKey = await ctx.modelRegistry.getApiKey(ctx.model!);
 
+          const existingFindingsSummary = summarizeExistingFindings(findings);
+
           const systemPrompt = `You are a code reviewer. Follow these instructions precisely.
 
 ${skillContent}
 
-IMPORTANT: Output findings in the exact format specified. Each finding MUST start with ### [SEVERITY] on its own line.`;
+${existingFindingsSummary ? `Findings already reported by other review types (do NOT repeat these; only report genuinely new issues):\n${existingFindingsSummary}\n\n` : ""}IMPORTANT: Output findings in the exact format specified. Each finding MUST start with ### [SEVERITY] on its own line.`;
 
           const userMessage: UserMessage = {
             role: "user",
@@ -541,6 +553,98 @@ function buildFixMessage(
   }
 
   return message;
+}
+
+/**
+ * Summarize existing findings to reduce duplicate reports from later review skills.
+ */
+function summarizeExistingFindings(findings: Finding[]): string {
+  if (findings.length === 0) return "";
+
+  return findings
+    .slice(0, 30)
+    .map((f) => {
+      const location = f.file ? ` (${stripLineFromFile(f.file)})` : "";
+      return `- [${f.severity}] ${f.title}${location}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Merge duplicate findings reported by multiple review skills.
+ */
+function deduplicateFindings(findings: Finding[]): Finding[] {
+  const byKey = new Map<string, Finding>();
+
+  for (const finding of findings) {
+    const key = [
+      normalize(stripLineFromFile(finding.file || "")),
+      normalize(finding.title),
+      normalize(finding.issue),
+    ].join("|");
+
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, finding);
+      continue;
+    }
+
+    byKey.set(key, mergeFindings(existing, finding));
+  }
+
+  return [...byKey.values()];
+}
+
+function mergeFindings(a: Finding, b: Finding): Finding {
+  const skillSet = new Set(
+    [a.skill, b.skill]
+      .flatMap((s) => s.split(","))
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+
+  return {
+    ...a,
+    severity: moreSevere(a.severity, b.severity),
+    skill: [...skillSet].join(", "),
+    suggestion:
+      b.suggestion.length > a.suggestion.length ? b.suggestion : a.suggestion,
+    issue: b.issue.length > a.issue.length ? b.issue : a.issue,
+    effort: moreEffort(a.effort, b.effort),
+  };
+}
+
+function moreSevere(a: Finding["severity"], b: Finding["severity"]): Finding["severity"] {
+  const order: Record<Finding["severity"], number> = {
+    HIGH: 0,
+    MEDIUM: 1,
+    LOW: 2,
+  };
+  return order[a] <= order[b] ? a : b;
+}
+
+function moreEffort(
+  a: Finding["effort"],
+  b: Finding["effort"],
+): Finding["effort"] {
+  const order: Record<NonNullable<Finding["effort"]>, number> = {
+    trivial: 0,
+    small: 1,
+    medium: 2,
+    large: 3,
+  };
+
+  if (!a) return b;
+  if (!b) return a;
+  return order[a] >= order[b] ? a : b;
+}
+
+function stripLineFromFile(file: string): string {
+  return file.replace(/:\d+(?::\d+)?$/, "");
+}
+
+function normalize(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /**
