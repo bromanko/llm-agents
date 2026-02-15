@@ -1,0 +1,11 @@
+{
+  "name": "ears-requirements",
+  "version": "1.0.0",
+  "description": "Generate precise, testable requirements using EARS (Easy Approach to Requirements Syntax)",
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "keywords": ["ears", "requirements", "specifications", "testing", "verification", "systems-engineering"],
+  "skills": ["./skills/"]
+}
