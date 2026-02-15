@@ -11,10 +11,8 @@
  *   ⌫  compacting  — context compaction in progress
  *   ✓  done        — agent finished
  *
- * Primary path uses `tmux rename-window` for reliable updates.
- * Falls back to tmux escape sequences (\033k...\033\\) written to the TTY,
- * so it still works in environments where tmux CLI invocation fails.
- * Requires `allow-rename on` in tmux config.
+ * Uses targeted tmux commands bound to the current pane (TMUX_PANE), so
+ * multiple pi instances do not clobber each other's window titles.
  *
  * Configuration via environment variables:
  *   TMUX_TITLES_POSITION — "suffix" (default) or "prefix"
@@ -22,7 +20,6 @@
 
 import { spawnSync } from "node:child_process";
 import { openSync, writeSync, closeSync } from "node:fs";
-import { basename } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 function inTmux(): boolean {
@@ -49,36 +46,111 @@ function writeToTty(data: string): void {
   }
 }
 
-function renameWindowWithTmux(title: string): boolean {
+function runTmux(args: string[]): { ok: boolean; stdout: string } {
   try {
-    const result = spawnSync("tmux", ["rename-window", title], {
-      stdio: "ignore",
+    const result = spawnSync("tmux", args, {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
     });
-    return !result.error && result.status === 0;
+    return {
+      ok: !result.error && result.status === 0,
+      stdout: (result.stdout ?? "").trim(),
+    };
   } catch {
-    return false;
+    return { ok: false, stdout: "" };
   }
 }
 
-function setTitle(icon: string, cwd: string): void {
+function getTargetPane(): string | undefined {
+  const pane = process.env.TMUX_PANE;
+  return pane && pane.length > 0 ? pane : undefined;
+}
+
+function getTargetWindow(): string | undefined {
+  const targetPane = getTargetPane();
+  if (!targetPane) return undefined;
+
+  const result = runTmux([
+    "display-message",
+    "-p",
+    "-t",
+    targetPane,
+    "#{window_id}",
+  ]);
+
+  return result.ok && result.stdout.length > 0 ? result.stdout : undefined;
+}
+
+function getCurrentWindowTitle(): string | undefined {
+  const targetWindow = getTargetWindow();
+  const args = targetWindow
+    ? ["display-message", "-p", "-t", targetWindow, "#{window_name}"]
+    : ["display-message", "-p", "#{window_name}"];
+
+  const result = runTmux(args);
+  return result.ok && result.stdout.length > 0 ? result.stdout : undefined;
+}
+
+function renameWindow(title: string): boolean {
+  const targetWindow = getTargetWindow();
+  const args = targetWindow
+    ? ["rename-window", "-t", targetWindow, title]
+    : ["rename-window", title];
+
+  return runTmux(args).ok;
+}
+
+const STATUS_ICONS = ["○", "✻", "$", "✎", "…", "⌫", "✓"];
+const ICON_CLASS = STATUS_ICONS.map((icon) => icon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("");
+const PREFIX_ICON_RE = new RegExp(`^[${ICON_CLASS}]\\s+`);
+const SUFFIX_ICON_RE = new RegExp(`\\s+[${ICON_CLASS}]$`);
+
+function withIcon(title: string, icon: string, position: "prefix" | "suffix"): string {
+  if (position === "prefix") {
+    const base = title.replace(PREFIX_ICON_RE, "");
+    return `${icon} ${base}`.trim();
+  }
+
+  const base = title.replace(SUFFIX_ICON_RE, "");
+  return `${base} ${icon}`.trim();
+}
+
+function withoutIcon(title: string, position: "prefix" | "suffix"): string {
+  return position === "prefix"
+    ? title.replace(PREFIX_ICON_RE, "").trim()
+    : title.replace(SUFFIX_ICON_RE, "").trim();
+}
+
+function setIcon(icon: string): void {
   if (!inTmux()) return;
 
-  const base = basename(cwd);
-  const position = process.env.TMUX_TITLES_POSITION ?? "suffix";
-  const title =
-    position === "prefix" ? `${icon} ${base}` : `${base} ${icon}`;
+  const position = (process.env.TMUX_TITLES_POSITION === "prefix" ? "prefix" : "suffix") as
+    | "prefix"
+    | "suffix";
 
-  // Primary path: ask tmux directly to rename the current window.
-  // Fallback: write tmux title escape sequence to TTY.
-  if (!renameWindowWithTmux(title)) {
-    writeToTty(`\x1bk${title}\x1b\\`);
+  const current = getCurrentWindowTitle();
+  if (!current) return;
+
+  const next = withIcon(current, icon, position);
+
+  if (!renameWindow(next)) {
+    writeToTty(`\x1bk${next}\x1b\\`);
   }
 }
 
-function clearTitle(): void {
+function clearIcon(): void {
   if (!inTmux()) return;
-  if (!renameWindowWithTmux("bash")) {
-    writeToTty(`\x1bkbash\x1b\\`);
+
+  const position = (process.env.TMUX_TITLES_POSITION === "prefix" ? "prefix" : "suffix") as
+    | "prefix"
+    | "suffix";
+
+  const current = getCurrentWindowTitle();
+  if (!current) return;
+
+  const next = withoutIcon(current, position);
+  if (!renameWindow(next)) {
+    writeToTty(`\x1bk${next}\x1b\\`);
   }
 }
 
@@ -93,31 +165,31 @@ const TOOL_ICONS: Record<string, string> = {
 };
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => {
-    setTitle("○", ctx.cwd);
+  pi.on("session_start", async () => {
+    setIcon("○");
   });
 
-  pi.on("agent_start", async (_event, ctx) => {
-    setTitle("✻", ctx.cwd);
+  pi.on("agent_start", async () => {
+    setIcon("✻");
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
-    setTitle("✓", ctx.cwd);
+  pi.on("agent_end", async () => {
+    setIcon("✓");
   });
 
-  pi.on("tool_call", async (event, ctx) => {
-    setTitle(TOOL_ICONS[event.toolName] ?? "✻", ctx.cwd);
+  pi.on("tool_call", async (event) => {
+    setIcon(TOOL_ICONS[event.toolName] ?? "✻");
   });
 
-  pi.on("tool_result", async (_event, ctx) => {
-    setTitle("✻", ctx.cwd);
+  pi.on("tool_result", async () => {
+    setIcon("✻");
   });
 
-  pi.on("session_before_compact", async (_event, ctx) => {
-    setTitle("⌫", ctx.cwd);
+  pi.on("session_before_compact", async () => {
+    setIcon("⌫");
   });
 
   pi.on("session_shutdown", async () => {
-    clearTitle();
+    clearIcon();
   });
 }
