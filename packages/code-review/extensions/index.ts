@@ -47,6 +47,13 @@ type FindingAction =
   | { type: "skip" }
   | { type: "stop" };
 
+/** Result from runReviews — includes raw response text for diagnostics */
+type ReviewResult = {
+  findings: Finding[];
+  /** Total characters of LLM response text across all skills */
+  totalResponseLength: number;
+} | null;
+
 const SEVERITY_COLORS: Record<string, string> = {
   HIGH: "error",
   MEDIUM: "warning",
@@ -148,15 +155,28 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Run each skill and collect findings
-      const allFindings = await runReviews(pi, ctx, skills, codeContext);
+      const reviewResult = await runReviews(pi, ctx, skills, codeContext);
 
-      if (allFindings === null) {
+      if (reviewResult === null) {
         ctx.ui.notify("Review cancelled", "info");
         return;
       }
 
+      const { findings: allFindings, totalResponseLength } = reviewResult;
+
       if (allFindings.length === 0) {
-        ctx.ui.notify("No issues found! 🎉", "success");
+        // If the LLM produced substantial output but we parsed zero findings,
+        // the response likely wasn't in the expected format — warn instead of
+        // claiming success.
+        const MIN_RESPONSE_FOR_SUSPICION = 200;
+        if (totalResponseLength >= MIN_RESPONSE_FOR_SUSPICION) {
+          ctx.ui.notify(
+            "Review completed but no findings could be parsed — the response may not have used the expected format. Try again or check the diff format.",
+            "warning",
+          );
+        } else {
+          ctx.ui.notify("No issues found! 🎉", "success");
+        }
         return;
       }
 
@@ -217,8 +237,8 @@ async function gatherCodeContext(
   pi: ExtensionAPI,
   ctx: { cwd: string },
 ): Promise<string | null> {
-  // Try jj first
-  const jjResult = await pi.exec("jj", ["diff"], {
+  // Try jj first (--git produces clean unified diff without ANSI/box-drawing)
+  const jjResult = await pi.exec("jj", ["diff", "--git"], {
     timeout: 10000,
   });
   if (jjResult.code === 0 && jjResult.stdout.trim().length > 0) {
@@ -256,9 +276,9 @@ async function runReviews(
   ctx: any,
   skills: ReviewSkill[],
   codeContext: string,
-): Promise<Finding[] | null> {
-  const result = await ctx.ui.custom<Finding[] | null>(
-    (tui: any, theme: any, _kb: any, done: (v: Finding[] | null) => void) => {
+): Promise<ReviewResult> {
+  const result = await ctx.ui.custom<ReviewResult>(
+    (tui: any, theme: any, _kb: any, done: (v: ReviewResult) => void) => {
       const loader = new BorderedLoader(
         tui,
         theme,
@@ -268,6 +288,7 @@ async function runReviews(
 
       const doReviews = async () => {
         const findings: Finding[] = [];
+        let totalResponseLength = 0;
 
         for (let i = 0; i < skills.length; i++) {
           const skill = skills[i];
@@ -318,10 +339,11 @@ ${existingFindingsSummary ? `Findings already reported by other review types (do
             .map((c: any) => c.text)
             .join("\n");
 
+          totalResponseLength += responseText.length;
           findings.push(...parseFindings(responseText, skill.name));
         }
 
-        return findings;
+        return { findings, totalResponseLength };
       };
 
       doReviews()
