@@ -1,4 +1,4 @@
-# bromanko-for-claude
+# bromanko-llm-agents
 
 A collection of Claude Code plugins for enhanced productivity and workflow automation.
 
@@ -8,7 +8,7 @@ Add this marketplace to your Claude Code installation:
 
 ### Using GitHub (recommended)
 ```shell
-/plugin marketplace add bromanko/claude
+/plugin marketplace add bromanko/llm-agents
 ```
 
 ### Using local path (for development)
@@ -30,7 +30,7 @@ Tools and commands for working with Jujutsu (jj) version control.
 
 **Installation:**
 ```shell
-/plugin install jj@bromanko-for-claude
+/plugin install jj@bromanko-llm-agents
 ```
 
 ---
@@ -43,7 +43,7 @@ Comprehensive word exploration with dictionary definitions, etymology, and liter
 
 **Installation:**
 ```shell
-/plugin install word-explorer@bromanko-for-claude
+/plugin install word-explorer@bromanko-llm-agents
 ```
 
 ---
@@ -56,7 +56,7 @@ Master typed functional programming in TypeScript with fp-ts library guidance.
 
 **Installation:**
 ```shell
-/plugin install fp-ts@bromanko-for-claude
+/plugin install fp-ts@bromanko-llm-agents
 ```
 
 ---
@@ -72,7 +72,7 @@ Gleam-specific code review skills for quality, security, performance, and testin
 
 **Installation:**
 ```shell
-/plugin install gleam-review@bromanko-for-claude
+/plugin install gleam-review@bromanko-llm-agents
 ```
 
 ---
@@ -88,7 +88,7 @@ F#-specific code review skills for quality, security, performance, and testing.
 
 **Installation:**
 ```shell
-/plugin install fsharp-review@bromanko-for-claude
+/plugin install fsharp-review@bromanko-llm-agents
 ```
 
 ---
@@ -104,7 +104,7 @@ Elm-specific code review skills for quality, security, performance, and testing.
 
 **Installation:**
 ```shell
-/plugin install elm-review@bromanko-for-claude
+/plugin install elm-review@bromanko-llm-agents
 ```
 
 ## Using plugins
@@ -146,7 +146,7 @@ plugins/your-plugin/
    ```
 3. Install plugins for testing:
    ```shell
-   /plugin install plugin-name@bromanko-for-claude
+   /plugin install plugin-name@bromanko-llm-agents
    ```
 
 ### Validation

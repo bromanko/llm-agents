@@ -1,5 +1,5 @@
 {
-  "name": "@bromanko/pi-packages",
+  "name": "@bromanko/llm-agents",
   "version": "1.0.0",
   "description": "Pi extensions, skills, and tools",
   "keywords": ["pi-package"],
