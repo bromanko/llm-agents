@@ -61,19 +61,6 @@ Master typed functional programming in TypeScript with fp-ts library guidance.
 
 ---
 
-### zinsser-writing
-Expert writing guidance based on William Zinsser's "On Writing Well" principles.
-
-**Skills:**
-- `zinsser-writing` - Writing and critiquing guidance emphasizing clarity, simplicity, and humanity
-
-**Installation:**
-```shell
-/plugin install zinsser-writing@bromanko-for-claude
-```
-
----
-
 ### gleam-review
 Gleam-specific code review skills for quality, security, performance, and testing.
 

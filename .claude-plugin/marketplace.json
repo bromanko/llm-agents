@@ -12,7 +12,6 @@
     { "name": "jj", "source": "./plugins/jj" },
     { "name": "word-explorer", "source": "./plugins/word-explorer" },
     { "name": "fp-ts", "source": "./plugins/fp-ts" },
-    { "name": "zinsser-writing", "source": "./plugins/zinsser-writing" },
     { "name": "gleam-review", "source": "./plugins/gleam-review" },
     { "name": "fsharp-review", "source": "./plugins/fsharp-review" },
     { "name": "elm-review", "source": "./plugins/elm-review" },
