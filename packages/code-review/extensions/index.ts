@@ -33,7 +33,9 @@ import { type Finding, parseFindings } from "../lib/parser.ts";
 import { notifyQueueSummary, processFindingActions } from "../lib/fix-flow.js";
 import {
   discoverReviewSkills,
+  filterDiffByExtensions,
   filterSkills,
+  getLanguageExtensions,
   getLanguages,
   getSkillsDirs,
   getTypesForLanguage,
@@ -148,9 +150,23 @@ export default function (pi: ExtensionAPI) {
       );
 
       // Gather code context (diff or full project)
-      const codeContext = await gatherCodeContext(pi, ctx);
-      if (codeContext === null) {
+      const fullDiff = await gatherCodeContext(pi, ctx);
+      if (fullDiff === null) {
         ctx.ui.notify("No code to review", "warning");
+        return;
+      }
+
+      // Filter diff to only include files relevant to the chosen language
+      const langExtensions = getLanguageExtensions(language);
+      const codeContext = langExtensions
+        ? filterDiffByExtensions(fullDiff, langExtensions)
+        : fullDiff;
+
+      if (codeContext === null) {
+        ctx.ui.notify(
+          `No ${language} files found in the current changes`,
+          "warning",
+        );
         return;
       }
 

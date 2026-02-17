@@ -83,6 +83,67 @@ export function filterSkills(
 }
 
 /**
+ * File extensions considered relevant for each review language.
+ * Used to filter diffs so that only matching files are sent to the LLM.
+ */
+const LANGUAGE_EXTENSIONS: Record<string, string[]> = {
+  typescript: [".ts", ".tsx", ".mts", ".cts"],
+  fsharp: [".fs", ".fsx"],
+  gleam: [".gleam"],
+  elm: [".elm"],
+};
+
+/**
+ * Return the file extensions associated with a review language,
+ * or undefined if the language has no known extension list (i.e. no filtering).
+ */
+export function getLanguageExtensions(language: string): string[] | undefined {
+  return LANGUAGE_EXTENSIONS[language];
+}
+
+/**
+ * Filter a unified diff (git format) to only include entries whose file path
+ * ends with one of the given extensions.
+ *
+ * Each diff entry starts with a line matching `diff --git a/... b/...`.
+ * We split on those boundaries and keep only matching sections.
+ *
+ * Returns the filtered diff string, or null if nothing remains.
+ */
+export function filterDiffByExtensions(
+  diff: string,
+  extensions: string[],
+): string | null {
+  // Split the diff into per-file sections.
+  // Each section starts with "diff --git …"
+  const sections: string[] = [];
+  let current = "";
+
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      if (current) sections.push(current);
+      current = line + "\n";
+    } else {
+      current += line + "\n";
+    }
+  }
+  if (current) sections.push(current);
+
+  const kept = sections.filter((section) => {
+    // Extract the b-side path from the header: diff --git a/foo b/bar
+    const match = section.match(/^diff --git a\/.+ b\/(.+)/);
+    if (!match) return false;
+    const filePath = match[1];
+    return extensions.some((ext) => filePath.endsWith(ext));
+  });
+
+  if (kept.length === 0) return null;
+
+  // Re-join, trimming any trailing whitespace from the split
+  return kept.join("").trimEnd() + "\n";
+}
+
+/**
  * Known skills directories relative to the repository root.
  * We resolve from the extension's own location.
  */
