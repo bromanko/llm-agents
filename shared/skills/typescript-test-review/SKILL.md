@@ -50,6 +50,13 @@ Test files are commonly `*.test.ts`, `*.spec.ts`, `*.test.tsx`, or under `__test
 - Setup and teardown are explicit and isolated
 - No hidden inter-test dependencies
 
+### Skipped & Disabled Tests
+- Flag any use of `it.skip`, `test.skip`, `describe.skip`, `xit`, `xdescribe`, `xtest`, or `test.todo` — especially if recently added
+- Look for tests with trivially passing assertions or empty bodies (a sign the test was gutted to pass)
+- Check for commented-out tests or `expect(true).toBe(true)` placeholder assertions
+- Watch for `TODO`/`FIXME` comments suggesting the test was too hard to fix and was bypassed instead
+- These patterns are **HIGH severity** when they appear to be workarounds (e.g., an LLM disabling a test it couldn't fix rather than addressing the underlying failure)
+
 ### Type-Driven Test Practices
 - Test fixtures align with actual TypeScript types
 - `as any` in tests minimized and justified

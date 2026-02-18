@@ -57,6 +57,13 @@ Test files are typically in a separate test project (e.g., `MyProject.Tests/`) w
 - Tests run independently (no order dependencies)
 - Arrange-Act-Assert pattern followed
 
+### Skipped & Disabled Tests
+- Flag any use of skip markers: `[<Fact(Skip="...")>]` (xUnit), `[<Ignore("...")>]` (NUnit), `ptest`/`ptestCase`/`ptestList` (Expecto) — especially if recently added
+- Look for tests with trivially passing assertions replacing what should be real checks (a sign the test was gutted to pass)
+- Check for commented-out tests or test bodies that have been emptied
+- Watch for `TODO`/`FIXME` comments suggesting the test was too hard to fix and was bypassed instead
+- These patterns are **HIGH severity** when they appear to be workarounds (e.g., an LLM disabling a test it couldn't fix rather than addressing the underlying failure)
+
 ### Test Organization
 - Test projects mirror source structure
 - Related tests grouped logically (module or `testList` grouping)

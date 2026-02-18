@@ -59,6 +59,13 @@ Test files are typically in `tests/` directory, mirroring the `src/` structure.
 - `describe` blocks group related tests logically
 - Tests run independently (no order dependencies)
 
+### Skipped & Disabled Tests
+- Flag any use of `Test.skip` or `skip` to disable tests — especially if recently added
+- Look for tests with `Expect.pass` replacing what should be a real assertion (a sign the test was gutted to pass)
+- Check for commented-out tests or test bodies that have been emptied
+- Watch for `TODO`/`FIXME` comments suggesting the test was too hard to fix and was bypassed instead
+- These patterns are **HIGH severity** when they appear to be workarounds (e.g., an LLM disabling a test it couldn't fix rather than addressing the underlying failure)
+
 ### Test Organization
 - Test file structure mirrors source structure
 - Related tests grouped with `describe`

@@ -55,6 +55,12 @@ Test files are typically in `test/` directory with `_test.gleam` suffix.
 - Setup/teardown handled appropriately
 - Tests run independently (no order dependencies)
 
+### Skipped & Disabled Tests
+- Gleam has no built-in skip mechanism, so watch for workarounds: commented-out tests, renamed test functions (e.g., `_test` prefix to prevent discovery), or emptied test bodies
+- Look for tests with trivially passing assertions replacing what should be real checks (a sign the test was gutted to pass)
+- Watch for `TODO`/`FIXME` comments suggesting the test was too hard to fix and was bypassed instead
+- These patterns are **HIGH severity** when they appear to be workarounds (e.g., an LLM disabling a test it couldn't fix rather than addressing the underlying failure)
+
 ### Test Organization
 - Test files mirror source structure
 - Related tests grouped logically
