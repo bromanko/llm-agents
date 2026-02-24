@@ -15,6 +15,37 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { execSync } from "node:child_process";
 import { isJjRepo } from "../lib/utils.ts";
 
+/**
+ * Detect the current jj workspace name.
+ * Returns null if in the default workspace or not in a workspace.
+ */
+function detectWorkspaceName(cwd: string): string | null {
+	try {
+		const ourChangeId = execSync(
+			`jj log -r '@' -T 'change_id' --no-graph`,
+			{ cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] },
+		).trim();
+
+		const listOutput = execSync(
+			`jj workspace list -T 'name ++ ":" ++ self.target().change_id() ++ "\\n"'`,
+			{ cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] },
+		).trim();
+
+		for (const line of listOutput.split("\n")) {
+			const sep = line.indexOf(":");
+			if (sep === -1) continue;
+			const name = line.slice(0, sep);
+			const changeId = line.slice(sep + 1);
+			if (changeId === ourChangeId && name !== "default") {
+				return name;
+			}
+		}
+	} catch {
+		// Not in a workspace or jj not available
+	}
+	return null;
+}
+
 interface JjInfo {
 	uniquePrefix: string;
 	rest: string;
@@ -84,6 +115,8 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		if (!isJjRepo(ctx.cwd)) return;
 
+		const wsName = detectWorkspaceName(ctx.cwd);
+
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			// Poll for jj changes periodically
 			let cachedJjInfo: JjInfo | null = null;
@@ -112,6 +145,11 @@ export default function (pi: ExtensionAPI) {
 					const home = process.env.HOME || process.env.USERPROFILE;
 					if (home && pwd.startsWith(home)) {
 						pwd = `~${pwd.slice(home.length)}`;
+					}
+
+					// Workspace indicator (yellow, between cwd and change ID)
+					if (wsName) {
+						pwd += " " + theme.fg("warning", `⎇ ${wsName}`);
 					}
 
 					const jj = getInfo();
