@@ -42,6 +42,18 @@ Every ExecPlan must satisfy all of the following:
 - **Outcome-focused.** The plan must produce a demonstrably working behavior, not merely code changes that "meet a definition."
 - **Jargon-free.** Define every term of art in plain language, or do not use it.
 
+### Who This Plan Is For
+
+Write every ExecPlan for a developer who is:
+
+- **Skilled at programming** — they can write code, use a terminal, run tests, and commit. You do not need to explain what a function is.
+- **Ignorant of your codebase** — they have never seen the repository. They do not know what files exist, what the architecture looks like, or where anything lives. Name every file, every directory, every module they need to touch.
+- **Ignorant of your toolchain** — they may not know your build system, test runner, linter, or deployment target. State the exact command to run, the working directory, and the expected output. Not "run the tests" but "from the repo root, run `npm test` and expect all 47 tests to pass."
+- **Ignorant of your domain** — they do not know your business logic, your users, or the problem you are solving. Explain the why, not just the what.
+- **Mediocre at test design** — they will write tests if told exactly what to test and how, but they will not invent good test cases on their own. Spell out the scenarios, edge cases, and expected behaviors. Do not say "write tests for the parser." Say "write a test that calls `parse("")` and asserts it returns `Err(EmptyInput)`, and a test that calls `parse("hello world")` and asserts it returns `Ok(Greeting("hello world"))`."
+
+If a plan cannot be implemented by this person without asking questions, it is not ready.
+
 ### Writing Principles
 
 **Purpose and intent come first.** Begin by explaining, in a few sentences, why the work matters from a user's perspective: what someone can do after this change that they could not do before, and how to see it working. Then guide the reader through the exact steps to achieve that outcome, including what to edit, what to run, and what they should observe.
@@ -67,6 +79,45 @@ Every ExecPlan must satisfy all of the following:
 Milestones are narrative, not bureaucracy. If you break the work into milestones, introduce each with a brief paragraph that describes the scope, what will exist at the end of the milestone that did not exist before, the commands to run, and the acceptance you expect to observe. Keep it readable as a story: goal, work, result, proof. Progress and milestones are distinct: milestones tell the story, progress tracks granular work. Both must exist. Never abbreviate a milestone merely for the sake of brevity — do not leave out details that could be crucial to a future implementation.
 
 Each milestone must be independently verifiable and incrementally implement the overall goal of the plan.
+
+### Task Granularity
+
+Break every milestone into bite-sized steps. Each step is a single, unambiguous action that takes roughly 2–5 minutes. The developer should never wonder "what do I do next?" or "am I done with this step?"
+
+Where applicable, steps follow the TDD cycle:
+
+1. Write the failing test — one step.
+2. Run the test to confirm it fails — one step.
+3. Write the minimal code to make the test pass — one step.
+4. Run the tests to confirm they pass — one step.
+5. Commit — one step.
+
+Each step must name the exact file(s) to touch, with full repository-relative paths. Each step must describe what to add, change, or remove concretely — not "update the handler" but "in `src/handlers/auth.ts`, add a new function `validateToken` that takes a `string` and returns a `Result<Claims, AuthError>`." Steps that produce output (running tests, starting a server, making a request) must include the expected output so the developer can tell success from failure.
+
+No step should require the developer to make a design decision. If a decision is needed, the plan makes it and explains why. No step should bundle multiple unrelated changes. "Add the type and write the test and update the config" is three steps, not one.
+
+### Testing Specificity
+
+Assume the developer will not invent good tests on their own. The plan must specify exactly what to test and how.
+
+Every new behavior needs at least one test specified in the plan — not "write tests for this" but "write a test that calls `parse("")` and asserts it returns `Err(EmptyInput)`." Edge cases must be called out explicitly. The developer should not have to think about what the edge cases are; enumerate them.
+
+Name test file locations with full paths. State the test runner command, including how to run a single test or a subset. Describe expected test output (pass/fail counts, specific assertion messages) so the developer knows what "working" looks like. When a test should fail before implementation (the red phase of TDD), say so and describe what the failure looks like. Include integration or end-to-end validation steps where appropriate — not just unit tests.
+
+### Design Principles
+
+Guide the developer toward clean, maintainable code:
+
+- **DRY.** Do not instruct the developer to duplicate logic. If two steps touch similar code, explain where to extract the common part.
+- **YAGNI.** Do not introduce abstractions, interfaces, or features that are not required by the current work. No "we might need this later."
+- **Minimal scope.** Each milestone delivers the smallest useful increment. No milestone tries to do everything at once.
+- **Additive changes.** Where possible, steps add new code before modifying or removing old code, keeping the system working at every commit point.
+
+### Commit Discipline
+
+The plan must produce a clean, readable commit history. Call out commit points explicitly so the developer never has to wonder when to commit. Each commit should represent a logical, self-contained unit of progress — a passing test, a completed refactor step, a new function with its tests. The system must be in a working state (tests pass) at every commit point. Do not instruct the developer to commit broken intermediate states.
+
+Where helpful, suggest commit messages or describe what the commit contains clearly enough that writing a good message is obvious.
 
 ### Prototyping and Parallel Implementations
 
@@ -192,7 +243,7 @@ When implementing an existing plan, follow these rules:
 
 3. **Keep the plan up to date.** At every stopping point, update the Progress section to affirmatively state what was accomplished and what comes next. Add or split entries as needed. If you discover something unexpected, record it in Surprises & Discoveries. If you make a design choice, record it in the Decision Log.
 
-4. **Commit frequently.** Each logical unit of change should be its own commit. Small, focused commits make rebasing and conflict resolution easier.
+4. **Commit frequently.** Each logical unit of change should be its own commit. Follow the commit points called out in the plan. The system must be in a working state (tests pass) at every commit. Small, focused commits make rebasing and conflict resolution easier.
 
 5. **Validate as you go.** After each milestone, run the validation steps described in the plan. Do not move to the next milestone until the current one passes its acceptance criteria.
 
