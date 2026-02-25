@@ -14,6 +14,8 @@ description: >
 
 Manage isolated jj workspaces for agentic work. This skill handles the full lifecycle: create, continue, finish, and list workspaces. It composes with any agent — the skill sets up the workspace, then launches whatever agent the user requests inside it.
 
+Requires jj ≥ 0.38.0 (for `jj workspace root --name`).
+
 ## Determine the Operation
 
 Based on the user's request, perform one of the four operations below:
@@ -53,28 +55,11 @@ WS_PATH="$REPO_ROOT/../${REPO_NAME}-ws-${WS_NAME}"
 jj workspace add --name "$WS_NAME" "$WS_PATH"
 ```
 
-### Step 5: Update the registry
-
-Read `<repo-root>/.jj/workspace-registry.json` (create it if it doesn't exist). Add the new workspace entry:
-
-```json
-{
-  "workspaces": {
-    "<name>": {
-      "path": "<absolute-path>",
-      "created": "<ISO-8601 timestamp>"
-    }
-  }
-}
-```
-
-Write the updated JSON back to the file.
-
-### Step 6: Report to user
+### Step 5: Report to user
 
 Tell the user the workspace name and absolute path.
 
-### Step 7: Launch agent (if requested)
+### Step 6: Launch agent (if requested)
 
 If the user asked for an agent to work in the workspace, launch it via the Task tool. Inject the following context into the subagent's prompt:
 
@@ -107,9 +92,7 @@ If the user specified a particular agent type (e.g., "the code review agent"), u
 ### Step 1: Verify workspace exists
 
 - Run `jj workspace list` and confirm the named workspace appears
-- Read the registry file at `<repo-root>/.jj/workspace-registry.json`
-- Look up the workspace path from the registry
-- If the workspace is in jj but not the registry, fall back to the naming convention: `<repo-root>/../<repo-name>-ws-<workspace-name>`
+- Get the workspace path: `jj workspace root --name <workspace-name>`
 - Verify the directory exists on disk
 
 ### Step 2: Show current state
@@ -123,7 +106,7 @@ Report what commits exist and whether there are uncommitted changes.
 
 ### Step 3: Launch agent (if requested)
 
-Same as Create Step 7 — inject workspace context into the subagent prompt. Add this additional line to the context:
+Same as Create Step 6 — inject workspace context into the subagent prompt. Add this additional line to the context:
 
 ```
 This is a CONTINUATION of work in an existing workspace. Review existing
@@ -137,7 +120,7 @@ changes with `jj log` and `jj diff` before starting new work.
 ### Step 1: Verify workspace exists
 
 - Run `jj workspace list` and confirm the workspace exists
-- Read the registry file and look up the path
+- Get the workspace path: `jj workspace root --name <workspace-name>`
 - If the workspace is not found in jj, report to the user and stop
 - **NEVER proceed with finish if the workspace name is "default"**
 
@@ -145,7 +128,7 @@ changes with `jj log` and `jj diff` before starting new work.
 
 Before any destructive operations, tell the user:
 - The workspace name
-- The workspace path (from registry)
+- The workspace path (from `jj workspace root --name`)
 - What will happen: merge changes, forget workspace, delete directory
 
 Ask for confirmation before proceeding.
@@ -206,22 +189,28 @@ After the merge operation, check for conflict markers in the output. jj will rep
 
 ### Step 6: Cleanup
 
+Get the workspace path for deletion:
+
+```bash
+WS_PATH=$(jj workspace root --name <name>)
+```
+
+Forget the workspace:
+
 ```bash
 jj workspace forget <name>
 ```
 
 Then delete the workspace directory. **Follow ALL safety rules:**
 
-1. The path MUST come from the registry file — never reconstruct for deletion
-2. The directory name MUST contain `-ws-`
-3. The path MUST NOT be an ancestor of the repo root
+1. The path MUST come from `jj workspace root --name` (run BEFORE `jj workspace forget`)
+2. The path MUST NOT be the repo root or an ancestor of it
+3. The path MUST NOT be empty
 4. If any check fails, stop and ask the user
 
 ```bash
-rm -rf <workspace-path>
+rm -rf "$WS_PATH"
 ```
-
-Remove the workspace entry from the registry file and write it back.
 
 ### Step 7: Report results
 
@@ -237,46 +226,19 @@ Show the user the merged result.
 
 ### Step 1: Gather data
 
-- Run `jj workspace list` for jj-tracked workspaces and their current commits
-- Read the registry file for managed workspace paths
+Run `jj workspace list` for jj-tracked workspaces and their current commits.
 
-### Step 2: Cross-reference
+For each non-default workspace, get its path:
+```bash
+jj workspace root --name <workspace-name>
+```
 
-For each workspace in the registry:
-- Check if it still appears in `jj workspace list`
-- Flag any inconsistencies (registry entry without jj workspace, or jj workspace without registry entry)
-
-### Step 3: Report
+### Step 2: Report
 
 For each workspace, show:
 - Name
-- Path (from registry)
+- Path (from `jj workspace root --name`)
 - Current change ID and description (from jj)
 - Whether it has uncommitted changes
 
 Format as a clean readable list. Exclude the "default" workspace from the managed workspace output (it's always there and not managed by this skill).
-
----
-
-## Registry File Format
-
-**Location**: `<repo-root>/.jj/workspace-registry.json`
-
-```json
-{
-  "workspaces": {
-    "my-feature": {
-      "path": "/Users/me/code/project-ws-my-feature",
-      "created": "2026-01-29T12:00:00Z"
-    },
-    "agent-a3f1b2c0": {
-      "path": "/Users/me/code/project-ws-agent-a3f1b2c0",
-      "created": "2026-01-29T14:30:00Z"
-    }
-  }
-}
-```
-
-- Created automatically on first workspace creation
-- Stored in `.jj/` so it is not tracked by the repository
-- If the file is missing or corrupt, fall back to the naming convention (`<repo-root>/../<repo-name>-ws-<name>`) for reads, but NEVER for deletion
