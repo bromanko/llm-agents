@@ -36,6 +36,12 @@ export default function (pi: ExtensionAPI) {
     const command = event.input.command ?? "";
     if (!command) return;
 
+    // Guard against a missing or empty cwd before passing it to isJjRepo.
+    // ExtensionContext types cwd as `string`, but defensive checks here prevent
+    // a TypeError from path.join when the extension is exercised in tests or
+    // edge-case runtimes where cwd may not yet be populated.
+    if (!ctx.cwd) return;
+
     if (!isJjRepo(ctx.cwd)) return;
 
     // Allow jj git subcommands (jj git fetch, jj git push, etc.)
