@@ -91,8 +91,13 @@ function extractInlineField(block: string, fieldNames: readonly string[]): strin
 function extractMultiLineField(block: string, fieldNames: readonly string[]): string | undefined {
   const labels = fieldNames.map(escapeRegExp).join("|");
   const allLabels = ALL_FIELD_LABELS.map(escapeRegExp).join("|");
+  // Use [^\S\n]* (horizontal whitespace only) instead of \s* after the colon
+  // so that a trailing newline is NOT consumed.  Consuming it would prevent the
+  // lookahead from finding the "\n<NextField>:" boundary, causing the next
+  // field's name to leak into this field's captured content when the field
+  // value is empty (e.g. "Issue:\nSuggestion:").
   const regex = new RegExp(
-    `(?:^|\\n)\\s*(?:[-*]\\s*)?(?:\\*\\*)?(?:${labels})(?:\\*\\*)?\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*(?:[-*]\\s*)?(?:\\*\\*)?(?:${allLabels})(?:\\*\\*)?\\s*:|\\n\\s*---+\\s*$|$)`,
+    `(?:^|\\n)\\s*(?:[-*]\\s*)?(?:\\*\\*)?(?:${labels})(?:\\*\\*)?\\s*:[^\\S\\n]*([\\s\\S]*?)(?=\\n\\s*(?:[-*]\\s*)?(?:\\*\\*)?(?:${allLabels})(?:\\*\\*)?\\s*:|\\n\\s*---+\\s*$|$)`,
     "i",
   );
 
@@ -101,7 +106,10 @@ function extractMultiLineField(block: string, fieldNames: readonly string[]): st
 
   const cleaned = match[1]
     .split("\n")
-    .map((line) => line.replace(/^\s*[-*]\s?/, "").trimEnd())
+    // Strip leading bullet markers (-, *, or numbered list like 1.) so that
+    // multi-line field values are clean plain text regardless of how the LLM
+    // formats its output.
+    .map((line) => line.replace(/^\s*(?:\d+\.|[-*])\s?/, "").trimEnd())
     .join("\n")
     .trim();
 
