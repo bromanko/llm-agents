@@ -156,6 +156,48 @@ Validate the marketplace configuration:
 claude plugin validate .
 ```
 
+## Testing
+
+Run the full test suite from the repository root:
+
+```bash
+npm test
+```
+
+Run a single test file:
+
+```bash
+node --experimental-strip-types --test path/to/file.test.ts
+```
+
+Test files are co-located with the module under test and named `<module>.test.ts` (or `.test.js` for existing JavaScript modules).
+
+**Exception: extension directories.** Never place test files or non-extension support modules inside directories registered as `pi.extensions` in `package.json` (e.g. `packages/jj/extensions/`, `shared/extensions/`). Pi auto-discovers every `*.ts` file in those directories and loads them as extensions — test files will execute their `test()` calls on import, and library modules without a default export will fail to load. Place extension tests in `test/extensions/` and shared library code in `shared/lib/` (or a `lib/` directory within the package).
+
+For extension tests, use the shared mock helper in `test/helpers.ts`:
+
+```ts
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createMockExtensionAPI } from "../../test/helpers.ts";
+import extension from "./my-extension.ts";
+
+test("registers and handles tool_call", async () => {
+  const pi = createMockExtensionAPI();
+  extension(pi as any);
+
+  const [handler] = pi.getHandlers("tool_call");
+  const result = await handler(
+    { toolName: "bash", input: { command: "git push" } },
+    { cwd: process.cwd(), sessionManager: { getBranch: () => [] } },
+  );
+
+  assert.equal(result?.block, true);
+});
+```
+
+No external testing dependencies are required. Tests use Node.js built-ins (`node:test`, `node:assert/strict`) and TypeScript support from `--experimental-strip-types`.
+
 ## License
 
 MIT

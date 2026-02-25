@@ -7,6 +7,9 @@
     "name": "bromanko",
     "email": "hello@bromanko.com"
   },
+  "scripts": {
+    "test": "node --experimental-strip-types --test '**/*.test.ts' '**/*.test.js'"
+  },
   "pi": {
     "extensions": [
       "./packages/jj/extensions",

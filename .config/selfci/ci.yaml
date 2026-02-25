@@ -18,14 +18,21 @@ job:
       dirs.forEach(d => console.log(d));
     ")
 
-    # Find all .ts extension files
+    # Find all .ts extension files (excluding test files)
     ext_files=""
     for dir in $ext_dirs; do
       if [ -d "$dir" ]; then
         for f in "$dir"/*.ts; do
-          [ -f "$f" ] && ext_files="$ext_files $f"
+          [ -f "$f" ] || continue
+          case "$f" in
+            *.test.ts) continue ;;
+          esac
+          ext_files="$ext_files $f"
         done
       elif [ -f "$dir" ]; then
+        case "$dir" in
+          *.test.ts) continue ;;
+        esac
         ext_files="$ext_files $dir"
       fi
     done
@@ -33,7 +40,11 @@ job:
     # Also include project-local extensions (.pi/extensions/)
     if [ -d ".pi/extensions" ]; then
       for f in .pi/extensions/*.ts; do
-        [ -f "$f" ] && ext_files="$ext_files $f"
+        [ -f "$f" ] || continue
+        case "$f" in
+          *.test.ts) continue ;;
+        esac
+        ext_files="$ext_files $f"
       done
     fi
 
@@ -70,5 +81,9 @@ job:
     fi
 
     echo "All extensions loaded successfully"
+
+    selfci step start "Run tests"
+    npm test
+    echo "All tests passed"
 
   clone-mode: partial
