@@ -4,8 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import blockGitMutating from "./block-git-mutating.ts";
-import { createMockExtensionAPI, type MockToolCallHandler } from "../../../test/helpers.ts";
+import blockGitMutating from "../../packages/jj/extensions/block-git-mutating.ts";
+import { createMockExtensionAPI, type MockToolCallHandler } from "../helpers.ts";
 
 /** Context shape expected by the block-git-mutating handler. */
 interface HandlerContext {

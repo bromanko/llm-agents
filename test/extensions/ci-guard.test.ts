@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import ciGuard, { CI_PASS_SIGNAL, isCiPassOutput } from "./ci-guard.ts";
-import { createMockExtensionAPI, type ExecResult, type MockToolCallHandler } from "../../test/helpers.ts";
+import ciGuard, { CI_PASS_SIGNAL, isCiPassOutput } from "../../shared/extensions/ci-guard.ts";
+import { createMockExtensionAPI, type ExecResult, type MockToolCallHandler } from "../helpers.ts";
 
 /** A single content block inside a tool-result message. */
 interface ContentBlock {
