@@ -198,6 +198,50 @@ test("registers and handles tool_call", async () => {
 
 No external testing dependencies are required. Tests use Node.js built-ins (`node:test`, `node:assert/strict`) and TypeScript support from `--experimental-strip-types`.
 
+## Pi fetch tool (MVP)
+
+This repository now includes a first-party `fetch` extension at `shared/extensions/fetch.ts`.
+
+- **Purpose:** fetch HTTP(S) URLs and return model-readable output with metadata (`URL`, optional `Final URL`, `Status`, `Content-Type`, `Method`) plus a readable body.
+- **MVP content handling:**
+  - `application/json` → pretty-printed JSON
+  - `text/html` → conservative HTML-to-text conversion
+  - `text/*` and markdown-like text → passthrough text
+  - other content types → best-effort text fallback
+- **Truncation behavior:** output is bounded by line/byte limits (defaults: 2000 lines, 50KB). When truncated, full output is saved to a temp file and the response includes a truncation notice with the saved path.
+- **Safety:** non-HTTP(S) schemes are rejected (for example `file://`).
+- **Known non-goals (deferred):** binary/PDF conversion and site-specific advanced scraping pipelines.
+
+Run pi with this extension directly:
+
+```bash
+pi --extension ./shared/extensions/fetch.ts
+```
+
+## Pi web_search tool (Brave-first v1)
+
+This repository now includes a first-party `web_search` extension at `shared/extensions/web-search/index.ts`.
+
+- **Purpose:** discover current web sources via Brave Search and return bounded, citation-friendly output.
+- **Provider scope (v1):** `brave` only.
+  - `provider: "auto"` resolves to Brave when `BRAVE_API_KEY` is set.
+  - Anthropic/Codex provider-native adapters are intentionally deferred to v2.
+- **Required env var:** `BRAVE_API_KEY`
+- **Parameters:**
+  - `query` (required)
+  - `provider` (`auto | brave`)
+  - `recency` (`day | week | month | year`)
+  - `limit` (clamped to `1..10`, default `5`)
+  - `enrich` (`boolean`, default `false`)
+  - `fetchTop` (clamped to `0..5`, default `0`)
+- **Optional enrichment:** when `enrich=true`, top results are fetched through the local fetch pipeline (`shared/lib/fetch-core.ts`) and appended as bounded excerpts.
+
+Run pi with this extension directly:
+
+```bash
+pi --extension ./shared/extensions/web-search/index.ts
+```
+
 ## License
 
 MIT

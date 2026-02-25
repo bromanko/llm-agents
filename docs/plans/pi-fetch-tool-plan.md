@@ -14,11 +14,11 @@ A user should be able to ask pi to fetch a URL and get a clean, bounded response
 - [x] (2026-02-25 18:10Z) Verified upstream pi built-in tools do not include `fetch`.
 - [x] (2026-02-25 18:12Z) Researched custom tool and truncation requirements in `docs/extensions.md` and extension examples.
 - [x] (2026-02-25 18:14Z) Audited this repository’s extension layout and selected integration points.
-- [ ] Add failing tests (TDD red phase) for fetch core behavior.
-- [ ] Implement fetch core to satisfy tests (TDD green phase).
-- [ ] Add failing tests (TDD red phase) for tool registration and output envelope.
-- [ ] Implement `fetch` tool registration and rendering (TDD green phase).
-- [ ] Run full suite and manual smoke validation, then update docs.
+- [x] (2026-02-25 19:27Z) Added failing core tests in `shared/extensions/fetch-core.test.ts` and confirmed red phase (`7` failing tests before implementation).
+- [x] (2026-02-25 19:32Z) Implemented `shared/extensions/fetch-core.ts` (URL validation/normalization, timeout handling, content transforms, truncation metadata + temp-file spill) and confirmed green phase (`7` passing tests).
+- [x] (2026-02-25 19:34Z) Added failing tool tests in `shared/extensions/fetch.test.ts` and confirmed red phase (missing export / tool implementation).
+- [x] (2026-02-25 19:37Z) Implemented `shared/extensions/fetch.ts` tool registration, envelope formatting, and lightweight renderers; confirmed green phase (`4` passing tool tests).
+- [x] (2026-02-25 19:41Z) Ran full suite (`npm test`, now `85` passing tests), ran manual `pi` smoke prompt with extension loaded, and documented behavior/limits in `README.md`.
 
 ## Surprises & Discoveries
 
@@ -30,6 +30,12 @@ A user should be able to ask pi to fetch a URL and get a clean, bounded response
 
 - Observation: oh-my-pi does not expose fetch as a separately installable extension package; fetch is implemented inside its coding-agent codebase.
   Evidence: `/tmp/oh-my-pi/packages/coding-agent/src/tools/fetch.ts`.
+
+- Observation: this repository’s `node --experimental-strip-types` test environment does not resolve runtime imports for `@mariozechner/pi-coding-agent` or `@sinclair/typebox`.
+  Evidence: direct import probes returned `Cannot find package ...` errors; implementation had to avoid hard runtime imports while still preserving extension API shape.
+
+- Observation: manual live fetch of `https://example.com` in this environment returned `502` due certificate verification/proxy behavior, but the tool still produced the expected metadata envelope structure.
+  Evidence: smoke output included `URL`, `Final URL`, `Status: 502`, `Content-Type`, and `Method` header lines.
 
 ## Decision Log
 
@@ -49,9 +55,21 @@ A user should be able to ask pi to fetch a URL and get a clean, bounded response
   Rationale: fetch behavior has many edge-cases (timeouts, redirects, truncation, content-type handling) that are safer to pin with tests first.
   Date: 2026-02-25
 
+- Decision: avoid hard runtime imports of `@mariozechner/pi-coding-agent` truncation helpers and `@sinclair/typebox` in extension runtime code loaded by unit tests.
+  Rationale: those packages are not resolvable in the repo’s plain Node test environment; preserving passing tests required a dependency-light implementation with equivalent behavior.
+  Date: 2026-02-25
+
+- Decision: expose `createFetchToolDefinition(fetchImpl)` and `formatFetchEnvelope()` from `shared/extensions/fetch.ts`.
+  Rationale: dependency injection enables deterministic tool tests without network I/O while keeping the production extension wiring unchanged (`default` export still registers the real tool).
+  Date: 2026-02-25
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Completed the full MVP described by this plan. The repository now has a new fetch core module (`shared/extensions/fetch-core.ts`), a registered `fetch` extension tool (`shared/extensions/fetch.ts`), and focused tests for both layers (`shared/extensions/fetch-core.test.ts`, `shared/extensions/fetch.test.ts`).
+
+Behavior achieved: URL normalization, HTTP(S)-only validation, deterministic timeout messaging, JSON pretty-printing, conservative HTML-to-text conversion, passthrough plain text handling, line/byte truncation, and full-output spill files when truncation occurs. The tool-level envelope now consistently returns URL/status/content-type/method metadata above the body.
+
+Validation outcome: targeted red/green cycles were completed for core and tool layers, and full suite validation now passes with `npm test` (`85` passing tests). Manual `pi` smoke invocation with the extension loaded confirmed live tool registration and envelope formatting; in this environment the upstream request returned `502`, so semantic content validation for `example.com` relied primarily on deterministic local server tests.
 
 ## Context and Orientation
 
@@ -261,6 +279,16 @@ Expected truncation marker example:
 
     [Output truncated: showing 2000 of 6423 lines (50KB of 188KB). Full output saved to: /tmp/pi-fetch-XXXX/output.txt]
 
+Observed manual smoke transcript (first 8 lines requested from live tool output):
+
+    URL: https://example.com
+    Final URL: https://example.com/
+    Status: 502
+    Content-Type: text/html
+    Method: html
+
+    ---
+
 Future parity with oh-my-pi’s advanced fetch pipeline (llms endpoints, site-specific handlers, binary conversion) is intentionally deferred to a follow-up plan.
 
 ## Interfaces and Dependencies
@@ -299,6 +327,6 @@ In `shared/extensions/fetch.ts`, register:
 
 Dependencies:
 
-- `@mariozechner/pi-coding-agent` (ExtensionAPI + truncation helpers)
-- `@sinclair/typebox` (schema)
-- Node built-ins only (`node:fs`, `node:os`, `node:path`, `node:http` for tests), no new external runtime dependency for MVP
+- `@mariozechner/pi-coding-agent` (type import for `ExtensionAPI`; runtime-provided by pi).
+- Node built-ins only for core logic and tests (`node:fs`, `node:os`, `node:path`, `node:http`, `node:test`, `node:assert/strict`).
+- No additional npm runtime dependency added for MVP; schema is represented as plain JSON-schema-compatible objects to keep local unit tests dependency-free.
