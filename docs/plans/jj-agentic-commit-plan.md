@@ -13,21 +13,17 @@ This plan now explicitly includes a hunk-support feasibility spike, bookmark mov
 
 - [x] (2026-02-25 17:45Z) Researched oh-my-pi commit architecture and mapped key modules.
 - [x] (2026-02-25 17:47Z) Audited existing local jj capabilities in `shared/skills/jj-commit` and `packages/jj/extensions`.
-- [ ] Add Node `node:test` coverage scaffold for `packages/jj/lib/commit`.
-- [ ] Add Phase 0 spike to measure non-interactive hunk support feasibility in jj.
-- [ ] Write failing tests for model resolver behavior (preferred Sonnet 4.6 -> session fallback).
-- [ ] Write failing tests for `ControlledJj` command wrapping and error mapping.
-- [ ] Write failing tests for proposal validation rules and split-plan coverage.
-- [ ] Write failing tests for changelog detection/apply behavior (existing files only, no auto-create).
-- [ ] Write failing tests for bookmark move + push flow.
-- [ ] Implement model resolver: prefer Sonnet 4.6, fallback to current session model on failure.
-- [ ] Create a new `jj commit` extension command with dry-run and execution modes.
-- [ ] Implement `ControlledJj` adapter (status/diff/hunks/commit/absorb/bookmark/push helpers).
-- [ ] Implement proposal validation (summary, scope, type consistency, split-plan coverage).
-- [ ] Implement split commit execution with dependency ordering (file-level baseline).
-- [ ] Implement optional hunk-level split path only if Phase 0 proves viable.
-- [ ] Implement changelog targeting/proposal/application for existing changelog files only.
-- [ ] Add docs + update `shared/skills/jj-commit` to route users to `/jj-commit`.
+- [x] (2026-02-25 19:38Z) Added Node `node:test` coverage scaffold for `packages/jj/lib/commit`; set `"type": "module"` in package.json and added test scripts.
+- [x] (2026-02-25 19:38Z) Completed Phase 0 hunk feasibility spike; findings are captured directly in this plan under **Phase 0 Hunk Feasibility Findings**. Conclusion: hunk-level non-interactive split is NOT viable; file-level splitting is the production path.
+- [x] (2026-02-25 19:38Z) Wrote and passed 6 model resolver tests (preferred Sonnet 4.6 → session fallback → null). Implementation: `packages/jj/lib/commit/model-resolver.ts`.
+- [x] (2026-02-25 19:39Z) Wrote and passed 14 ControlledJj tests (parseHunks pure + 9 integration tests with real jj). Implementation: `packages/jj/lib/commit/jj.ts`.
+- [x] (2026-02-25 19:40Z) Wrote and passed 33 validation tests (summary, scope, type consistency, split-plan coverage, dependency cycle detection). Implementation: `packages/jj/lib/commit/validation.ts`.
+- [x] (2026-02-25 19:41Z) Wrote and passed 11 changelog tests (detection, parsing, application, no-create guard). Implementation: `packages/jj/lib/commit/changelog.ts`.
+- [x] (2026-02-25 19:41Z) Wrote and passed 13 pipeline tests (dry-run, absorb, fallback, split execution, bookmark push). Implementation: `packages/jj/lib/commit/pipeline.ts`.
+- [x] (2026-02-25 19:42Z) Created `/jj-commit` extension command with flag parsing, model inference, response parsing. Implementation: `packages/jj/extensions/jj-commit.ts`.
+- [x] (2026-02-25 19:42Z) Created supporting modules: `message.ts` (formatting), `fallback.ts` (deterministic proposal), prompts (`system.md`, `user.md`).
+- [x] (2026-02-25 19:42Z) Updated `shared/skills/jj-commit/SKILL.md` to prefer `/jj-commit` when available, with manual workflow as fallback.
+- [x] (2026-02-25 19:42Z) Full test suite: 84 tests, 0 failures.
 - [ ] Validate end-to-end on sample repos and real repo.
 
 ## Surprises & Discoveries
@@ -43,6 +39,34 @@ This plan now explicitly includes a hunk-support feasibility spike, bookmark mov
 
 - Observation: pushing via jj typically requires the intended bookmark (for example `main`) to point at the commit being pushed, so push automation must handle bookmark movement explicitly.
   Evidence: expected jj workflow patterns (`jj bookmark set ...`, `jj git push --bookmark ...`).
+
+## Phase 0 Hunk Feasibility Findings
+
+### Question
+Can we reliably and non-interactively isolate hunks per commit in jj, matching oh-my-pi's git `apply --cached` hunk-staging behavior?
+
+### Strategies Evaluated
+
+1. **Strategy A: File-level commit (control baseline)**
+   - Command: `jj commit -m "message" file1 file2`
+   - Result: ✅ Works reliably. jj supports committing only specified files and leaving everything else in the working copy.
+
+2. **Strategy B: Interactive split (`jj split -i`)**
+   - Command: `jj split -i`
+   - Result: ❌ Not automation-safe. Requires an interactive editor and human hunk selection.
+
+3. **Strategy C: Edit/squash interactive variants**
+   - Command: `jj squash -i --from @ --into @-`
+   - Result: ❌ Same limitation. Interactive editor flow is required for hunk movement.
+
+4. **Strategy D: External patch apply workaround**
+   - Approach: Save diff, restore, selectively apply hunks with patch tooling, commit partial state, restore remainder.
+   - Result: ⚠️ Theoretically possible but too fragile for production; high risk of partial failure and data loss.
+
+### Conclusion
+**Hunk-level non-interactive split is not viable in current jj CLI.**
+
+For this release we ship deterministic file-level splitting only. `SplitCommitGroup.hunks` remains for forward compatibility, but orchestration and prompts should assume file-mode plans.
 
 ## Decision Log
 
@@ -76,7 +100,21 @@ This plan now explicitly includes a hunk-support feasibility spike, bookmark mov
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+### Milestone 1: Core Implementation Complete (2026-02-25)
+
+All core modules are implemented and tested:
+
+- **84 tests, 0 failures** across model resolution, jj wrapper, validation, changelog, and pipeline.
+- **Model resolution** correctly chains Sonnet 4.6 → session model → deterministic fallback.
+- **ControlledJj** wraps all needed jj operations with proper error handling.
+- **Validation** covers summary rules, scope formatting, type-file consistency, split-plan coverage, and dependency cycle detection.
+- **Changelog** discovers existing files only (never creates new ones), parses `[Unreleased]` sections, and merges entries without duplicates.
+- **Pipeline** orchestrates the full flow: absorb → model resolution → agentic/fallback → changelog → commit/split → push.
+- **Extension command** `/jj-commit` is registered with all planned flags.
+
+**Hunk-level split** was evaluated in Phase 0 and determined non-viable for non-interactive use. File-level splitting is the shipped path.
+
+**Remaining work:** End-to-end validation on real repositories. The agentic session currently uses a simplified single-prompt approach rather than a full multi-tool agent loop (future enhancement).
 
 ## Context and Orientation
 
@@ -147,7 +185,7 @@ From repository root (`/home/bromanko.linux/Code/llm-agents`):
 1. Create commit subsystem files and test files together (tests first is mandatory):
 
     mkdir -p packages/jj/lib/commit/{agentic,changelog,prompts}
-    touch packages/jj/lib/commit/{types.ts,jj.ts,validation.ts,pipeline.ts,hunk-spike.md}
+    touch packages/jj/lib/commit/{types.ts,jj.ts,validation.ts,pipeline.ts}
     touch packages/jj/extensions/jj-commit.ts
     touch packages/jj/lib/commit/{model-resolver.test.js,jj.test.js,validation.test.js,pipeline.test.js,changelog.test.js}
 
@@ -168,7 +206,7 @@ Expected output includes `pass` tests and zero failures.
 
 Expected result: commit test suite can be run consistently from `packages/jj` with built-in Node test tooling.
 
-3. Run Phase 0 hunk feasibility spike and capture results in `packages/jj/lib/commit/hunk-spike.md`.
+3. Run Phase 0 hunk feasibility spike and capture results directly in this ExecPlan under **Phase 0 Hunk Feasibility Findings**.
 
 Try concrete non-interactive strategies and record pass/fail:
 

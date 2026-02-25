@@ -11,6 +11,25 @@ description: >
 
 Analyze jj status and create logical commits with good messages.
 
+## Preferred: `/jj-commit` command
+
+When available, prefer the `/jj-commit` extension command which provides:
+- AI-powered commit message generation with model fallback
+- Automatic split commit detection for unrelated changes
+- Optional `jj absorb` pre-pass
+- Changelog detection and updates (existing files only)
+- Push workflow with bookmark management
+
+Usage:
+- `/jj-commit` — analyze and commit
+- `/jj-commit --dry-run` — preview without committing
+- `/jj-commit --push --bookmark main` — commit and push
+- `/jj-commit --no-changelog` — skip changelog updates
+- `/jj-commit --no-absorb` — skip absorb pre-pass
+- `/jj-commit --context "fixing auth bug"` — provide context
+
+If `/jj-commit` is not available, fall back to the manual workflow below.
+
 ## Description
 
 This skill helps create well-structured commits in a jujutsu repository by:

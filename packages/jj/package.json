@@ -1,11 +1,16 @@
 {
   "name": "@bromanko/pi-jj",
   "version": "1.0.0",
+  "type": "module",
   "description": "Tools and skills for working with Jujutsu (jj) version control",
   "keywords": ["pi-package"],
   "author": {
     "name": "bromanko",
     "email": "hello@bromanko.com"
+  },
+  "scripts": {
+    "test:commit": "node --test lib/commit/*.test.js",
+    "test:commit:watch": "node --test --watch lib/commit/*.test.js"
   },
   "pi": {
     "extensions": ["./extensions"],
