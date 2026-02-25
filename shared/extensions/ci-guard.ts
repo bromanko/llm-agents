@@ -11,6 +11,22 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 /**
+ * Canonical text fragment that selfci emits when a run is successful.
+ * Any bash tool-result whose text contains both "✅" and "passed" is treated
+ * as a passing CI signal (see `isCiPassOutput`).
+ */
+export const CI_PASS_SIGNAL = "✅ passed";
+
+/**
+ * Returns true when the output text of a bash tool-result indicates a
+ * successful selfci run.  selfci always emits "✅" followed by "passed"
+ * somewhere in its success output.
+ */
+export function isCiPassOutput(text: string): boolean {
+  return text.includes("✅") && text.includes("passed");
+}
+
+/**
  * Check session history to see if CI has passed after all file mutations.
  */
 function hasCiPassedAfterMutations(ctx: ExtensionContext): boolean {
@@ -32,8 +48,8 @@ function hasCiPassedAfterMutations(ctx: ExtensionContext): boolean {
           c.type === "text" ? c.text : ""
         ).join("");
         
-        // selfci outputs "✅ passed" on success
-        if (text.includes("✅") && text.includes("passed")) {
+        // selfci outputs "✅ passed" on success (see CI_PASS_SIGNAL / isCiPassOutput)
+        if (isCiPassOutput(text)) {
           lastCiPassIndex = i;
         }
       }
@@ -54,6 +70,10 @@ function hasCiPassedAfterMutations(ctx: ExtensionContext): boolean {
 export default function (pi: ExtensionAPI) {
   // Block push if CI hasn't passed
   pi.on("tool_call", async (event, ctx) => {
+    // Only the "bash" tool can invoke git/jj; all other tool names are
+    // unconditionally ignored.  This is intentional: if a future tool were
+    // added that can also run shell commands it should be explicitly opted in
+    // here rather than accidentally bypassing the guard.
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
 
