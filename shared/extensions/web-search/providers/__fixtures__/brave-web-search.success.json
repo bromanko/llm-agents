@@ -1,0 +1,31 @@
+{
+  "query": {
+    "original": "typescript 5.7 release notes"
+  },
+  "request_id": "req-success-123",
+  "web": {
+    "results": [
+      {
+        "title": "Announcing TypeScript 5.7",
+        "url": "https://devblogs.microsoft.com/typescript/announcing-typescript-5-7/",
+        "description": "TypeScript 5.7 introduces improved project diagnostics and updated library type support.",
+        "age": "2 days ago",
+        "page_age": "2026-02-24T12:00:00Z"
+      },
+      {
+        "title": "TypeScript 5.7 Release Notes",
+        "url": "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html",
+        "description": "Official release notes for TypeScript 5.7 with breaking changes and migration notes.",
+        "age": "3 days ago",
+        "page_age": "2026-02-23T08:30:00Z"
+      },
+      {
+        "title": "TypeScript 5.7 overview",
+        "url": "https://example.com/typescript-5-7-overview",
+        "description": "A practical summary of TypeScript 5.7 features and tooling updates.",
+        "age": "1 week ago",
+        "page_age": "2026-02-19T09:00:00Z"
+      }
+    ]
+  }
+}

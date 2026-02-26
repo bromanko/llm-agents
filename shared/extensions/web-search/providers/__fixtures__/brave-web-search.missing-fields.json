@@ -1,0 +1,24 @@
+{
+  "request_id": "req-missing-fields-456",
+  "web": {
+    "results": [
+      {
+        "title": "Missing URL result",
+        "description": "Should be ignored because url is missing."
+      },
+      {
+        "url": "https://example.com/missing-title",
+        "description": "Should be ignored because title is missing."
+      },
+      {
+        "title": "Valid fallback entry",
+        "url": "https://example.com/valid-entry"
+      },
+      {
+        "title": "Blank URL entry",
+        "url": "   ",
+        "description": "Should be ignored because url is blank."
+      }
+    ]
+  }
+}
