@@ -16,10 +16,33 @@ import { execSync } from "node:child_process";
 import { isJjRepo } from "../lib/utils.ts";
 
 /**
- * Detect the current jj workspace name.
- * Returns null if in the default workspace or not in a workspace.
+ * Detect the current jj workspace name from session state.
+ * The jj-workspace extension persists the active workspace as a
+ * `jj-workspace-state` custom entry. We read the latest one to
+ * stay in sync without spawning extra subprocesses.
+ * Falls back to querying jj directly if no session state is found.
  */
-function detectWorkspaceName(cwd: string): string | null {
+function detectWorkspaceName(cwd: string, entries?: { type?: string; customType?: string; data?: unknown }[]): string | null {
+	// Check session state from jj-workspace extension (most reliable, zero cost)
+	if (entries) {
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			const isWsEntry =
+				(entry.customType === "jj-workspace-state") ||
+				(entry.type === "jj-workspace-state");
+			if (!isWsEntry) continue;
+
+			const data = entry.data;
+			if (data === null || data === undefined) return null;
+			if (typeof data === "object" && data !== null && "name" in data) {
+				const name = (data as { name: unknown }).name;
+				return typeof name === "string" ? name : null;
+			}
+			return null;
+		}
+	}
+
+	// Fallback: query jj directly (for when jj-workspace extension is not loaded)
 	try {
 		const ourChangeId = execSync(
 			`jj log -r '@' -T 'change_id' --no-graph`,
@@ -115,21 +138,33 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		if (!isJjRepo(ctx.cwd)) return;
 
-		const wsName = detectWorkspaceName(ctx.cwd);
-
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			// Poll for jj changes periodically
 			let cachedJjInfo: JjInfo | null = null;
+			let cachedWsName: string | null = null;
 			let lastFetch = 0;
 			const CACHE_MS = 3000;
 
-			function getInfo(): JjInfo | null {
-				const now = Date.now();
-				if (now - lastFetch > CACHE_MS) {
-					cachedJjInfo = getJjInfo(ctx.cwd);
-					lastFetch = now;
+			function refreshCache() {
+				cachedJjInfo = getJjInfo(ctx.cwd);
+				cachedWsName = detectWorkspaceName(ctx.cwd, ctx.sessionManager.getEntries() as any[]);
+				lastFetch = Date.now();
+			}
+
+			function ensureCache() {
+				if (Date.now() - lastFetch > CACHE_MS) {
+					refreshCache();
 				}
+			}
+
+			function getInfo(): JjInfo | null {
+				ensureCache();
 				return cachedJjInfo;
+			}
+
+			function getWsName(): string | null {
+				ensureCache();
+				return cachedWsName;
 			}
 
 			return {
@@ -148,6 +183,7 @@ export default function (pi: ExtensionAPI) {
 					}
 
 					// Workspace indicator (yellow, between cwd and change ID)
+					const wsName = getWsName();
 					if (wsName) {
 						pwd += " " + theme.fg("warning", `⎇ ${wsName}`);
 					}
