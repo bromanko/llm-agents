@@ -12,27 +12,34 @@ The old `shared/skills/workspace/SKILL.md` attempted this with prompt instructio
 
 ## Progress
 
-- [ ] (2026-02-26 19:55Z) Milestone 1.1: Create `packages/jj/extensions/jj-workspace.ts` skeleton with `isJjRepo()` early return.
-- [ ] (2026-02-26 19:55Z) Milestone 1.2: Add `activeCwd`/`activeWorkspace` mutable state and `getActiveCwd()` helper.
-- [ ] (2026-02-26 19:55Z) Milestone 1.3: Override `read`, `write`, `edit`, and `bash` tools with dynamic CWD delegation.
-- [ ] (2026-02-26 19:55Z) Milestone 1.4: Implement `user_bash` interception so `!` and `!!` run in `activeCwd`.
-- [ ] (2026-02-26 19:55Z) Milestone 2.1: Add `runJj()`, workspace-list parsing, and completion helpers using templated `jj workspace list` output.
-- [ ] (2026-02-26 19:55Z) Milestone 2.2: Implement `/ws-create` with collision checks and persistence.
-- [ ] (2026-02-26 19:55Z) Milestone 2.3: Implement `/ws-list`, `/ws-switch`, `/ws-default`, and argument completions.
-- [ ] (2026-02-26 19:55Z) Milestone 3.1: Implement `/ws-finish` preflight checks and deterministic merge path.
-- [ ] (2026-02-26 19:55Z) Milestone 3.2: Add conflict rollback via operation restore and safe filesystem deletion guards.
-- [ ] (2026-02-26 19:55Z) Milestone 4.1: Add `before_agent_start` system prompt CWD rewrite + workspace rules.
-- [ ] (2026-02-26 19:55Z) Milestone 5.1: Add `session_start` restoration from `jj-workspace-state` entries.
-- [ ] (2026-02-26 19:55Z) Milestone 6.1: Add automated tests in `test/extensions/jj-workspace.test.ts` (red first, then green).
-- [ ] (2026-02-26 19:55Z) Milestone 6.2: Run `node --experimental-strip-types --test 'test/extensions/jj-workspace.test.ts'` and confirm all tests pass.
-- [ ] (2026-02-26 19:55Z) Milestone 7.1: Remove `shared/skills/workspace/SKILL.md` and `shared/skills/workspace/`.
-- [ ] (2026-02-26 19:55Z) Milestone 7.2: Remove obsolete `plugins/jj/workspace-agent-plan.md`.
-- [ ] (2026-02-26 19:55Z) Milestone 7.3: Execute end-to-end manual validation scenarios and record outputs.
+- [x] (2026-02-26 20:10Z) Milestone 1.1: Created `packages/jj/extensions/jj-workspace.ts` with `isJjRepo()` early return.
+- [x] (2026-02-26 20:10Z) Milestone 1.2: Added `activeCwd`/`activeWorkspace` state and `getActiveCwd()` helper.
+- [x] (2026-02-26 20:10Z) Milestone 1.3: Overrode `read`, `write`, `edit`, and `bash` tools with dynamic CWD delegation.
+- [x] (2026-02-26 20:10Z) Milestone 1.4: Implemented `user_bash` interception so `!` and `!!` resolve to workspace CWD.
+- [x] (2026-02-26 20:10Z) Milestone 2.1: Added `runJj()`, templated workspace-list parsing, and completion helpers.
+- [x] (2026-02-26 20:10Z) Milestone 2.2: Implemented `/ws-create` with collision checks and persistence.
+- [x] (2026-02-26 20:10Z) Milestone 2.3: Implemented `/ws-list`, `/ws-switch`, `/ws-default`, and command completions.
+- [x] (2026-02-26 20:10Z) Milestone 3.1: Implemented `/ws-finish` preflight checks and deterministic merge path.
+- [x] (2026-02-26 20:10Z) Milestone 3.2: Added rollback via `jj op restore` on conflict plus guarded directory deletion.
+- [x] (2026-02-26 20:10Z) Milestone 4.1: Added `before_agent_start` system prompt CWD rewrite + workspace rules.
+- [x] (2026-02-26 20:10Z) Milestone 5.1: Added `session_start` restoration from `jj-workspace-state` entries.
+- [x] (2026-02-26 20:10Z) Milestone 6.1: Added automated coverage in `test/extensions/jj-workspace.test.ts`.
+- [x] (2026-02-26 20:10Z) Milestone 6.2: Ran `node --experimental-strip-types --test 'test/extensions/jj-workspace.test.ts'` with zero failures.
+- [x] (2026-02-26 20:10Z) Milestone 7.1: Removed `shared/skills/workspace/SKILL.md` and `shared/skills/workspace/`.
+- [x] (2026-02-26 20:10Z) Milestone 7.2: Removed obsolete `plugins/jj/workspace-agent-plan.md`.
+- [x] (2026-02-26 20:17Z) Milestone 7.3: Executed scenarios A-E end-to-end with a headless extension harness and real jj commands (`/tmp/jj-workspace-manual-validation.mjs`).
 
 
 ## Surprises & Discoveries
 
-(To be filled during implementation.)
+- Observation: Test execution in this workspace does not resolve `@mariozechner/pi-coding-agent` as a normal npm dependency.
+  Evidence: Initial test run failed with `ERR_MODULE_NOT_FOUND` when importing runtime tool factories.
+
+- Observation: Running manual scenarios in this non-interactive harness required command-level simulation instead of direct `/ws-*` entry through the Pi TUI.
+  Evidence: Executed `/tmp/jj-workspace-manual-validation.mjs`, which loaded the extension, invoked command handlers, and exercised real jj operations for scenarios A-E.
+
+- Observation: Dynamic runtime import with fallback keeps production tool factories available while still allowing repository-local tests without installed npm dependency wiring.
+  Evidence: After switching to async `loadToolFactories()`, `node --experimental-strip-types --test 'test/extensions/jj-workspace.test.ts'` passed (14/14), and `npm test` passed (267/267).
 
 
 ## Decision Log
@@ -73,10 +80,23 @@ The old `shared/skills/workspace/SKILL.md` attempted this with prompt instructio
   Rationale: No extension API currently rewires picker root. Tool execution remains correct even with this limitation.
   Date: 2026-02-26
 
+- Decision: Load tool factories via async runtime `import()` with an internal fallback for tests.
+  Rationale: Repository tests run outside the Pi runtime and may not resolve `@mariozechner/pi-coding-agent` as an npm dependency, while production Pi sessions should still use the real exported tool factories.
+  Date: 2026-02-26
+
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and completion.)
+Implemented a full `jj-workspace` extension in `packages/jj/extensions/jj-workspace.ts` with CWD-aware tool overrides, slash command lifecycle management, conflict-safe finish behavior, prompt rewriting, and session-state restoration.
+
+Added end-to-end unit coverage in `test/extensions/jj-workspace.test.ts` for registration behavior, command lifecycle, merge success/conflict handling, persistence, and prompt/user-bash integration. Targeted and full test runs both pass.
+
+Removed the deprecated workspace skill and the obsolete workspace planning artifact:
+
+- `shared/skills/workspace/SKILL.md`
+- `plugins/jj/workspace-agent-plan.md`
+
+Manual scenario validation is complete: scenarios A-E were exercised in a headless extension harness (`/tmp/jj-workspace-manual-validation.mjs`) using real jj commands and command-handler invocation, including conflict rollback behavior.
 
 
 ## Context and Orientation
@@ -600,7 +620,26 @@ Reference implementation pattern (already embedded above) mirrors SSH tool overr
 
 Existing `packages/jj/extensions/jj-footer.ts` already renders workspace indicator (`⎇`) by inspecting jj state. This extension must not duplicate footer rendering.
 
-Obsolete assets to remove at completion:
+Manual scenario transcript source:
+
+- `/tmp/jj-workspace-manual-validation.mjs`
+
+Key output excerpt from that run:
+
+    Manual validation scenarios completed successfully.
+
+    Scenario A
+      - /ws-create feature-test -> workspace at /tmp/.../demo-repo-ws-feature-test
+      - !pwd in workspace -> /tmp/.../demo-repo-ws-feature-test
+      - /ws-finish feature-test -> returned to default cwd /tmp/.../demo-repo
+      - !ls hello.txt in default -> hello.txt
+
+    Scenario D
+      - /ws-finish conflict-ws emitted rollback message
+      - workspace directory preserved -> /tmp/.../demo-repo-ws-conflict-ws
+      - /ws-list still includes conflict-ws -> yes
+
+Removed obsolete assets:
 
 - `shared/skills/workspace/SKILL.md`
 - `plugins/jj/workspace-agent-plan.md`
