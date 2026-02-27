@@ -242,6 +242,77 @@ Run pi with this extension directly:
 pi --extension ./shared/extensions/web-search/index.ts
 ```
 
+## Pi lsp tool
+
+This repository includes a universal LSP extension at `packages/lsp/extensions/lsp.ts` that provides automatic diagnostics and code intelligence for any language with a configured LSP server.
+
+### What it does
+
+- **Auto diagnostics on write/edit:** after every `write` or `edit` tool call, the extension sends the file to the appropriate LSP server and appends any diagnostics directly to the tool result. No explicit tool call needed.
+- **Format on write:** optionally reformats the file after write/edit using the LSP server's formatting capability. Enabled by default.
+- **`lsp` tool for code intelligence:** a single tool with an `action` parameter for on-demand queries:
+  - `languages` — list detected servers and their status
+  - `diagnostics` — get current diagnostics for a file
+  - `definition` — go to definition
+  - `references` — find all references
+  - `hover` — get hover/type information
+  - `symbols` — document or workspace symbols (pass `query` for workspace)
+  - `rename` — rename a symbol
+  - `code_actions` — list available code actions
+  - `incoming_calls` / `outgoing_calls` — call hierarchy
+
+### Configuration
+
+The extension merges configuration from three layers (lowest to highest precedence):
+
+1. Built-in defaults (`packages/lsp/lib/defaults.json`)
+2. User config (`~/.pi/agent/lsp.json`)
+3. Project config (`.pi/lsp.json`)
+
+Example `.pi/lsp.json`:
+
+```json
+{
+  "formatOnWrite": true,
+  "diagnosticsOnWrite": true,
+  "autoCodeActions": false,
+  "idleTimeoutMinutes": 10,
+  "servers": {
+    "typescript-language-server": {
+      "args": ["--stdio", "--log-level=1"]
+    },
+    "custom-server": {
+      "command": "my-lsp",
+      "args": ["--stdio"],
+      "fileTypes": [".custom"],
+      "rootMarkers": ["custom.config"]
+    }
+  }
+}
+```
+
+### Supported languages (v1)
+
+- **TypeScript/JavaScript** via `typescript-language-server` (`.ts`, `.tsx`, `.js`, `.jsx`)
+
+Additional servers can be added via config files.
+
+### Running
+
+The extension is auto-loaded when using this repository as a pi package. To run directly:
+
+```bash
+pi --extension ./packages/lsp/extensions/lsp.ts
+```
+
+### Integration tests
+
+Integration tests require `typescript-language-server` and `typescript` in PATH:
+
+```bash
+nix develop .#lsp-test -c node --experimental-strip-types --test packages/lsp/test/integration/typescript.e2e.test.ts
+```
+
 ## License
 
 MIT
