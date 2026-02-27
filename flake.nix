@@ -23,6 +23,14 @@
             pkgs.selfci
           ];
         };
+
+        lsp-test = pkgs.mkShell {
+          packages = [
+            pkgs.selfci
+            pkgs.nodePackages.typescript-language-server
+            pkgs.nodePackages.typescript
+          ];
+        };
       });
     };
 }

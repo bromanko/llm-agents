@@ -1,0 +1,14 @@
+{
+  "name": "@bromanko/pi-lsp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Universal LSP extension for pi with automatic diagnostics and code intelligence",
+  "keywords": ["pi-package"],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
