@@ -15,23 +15,34 @@ The user-visible benefit is better autonomous coding with less prompt waste: no 
 
 - [x] (2026-02-27 22:46Z) Rewrote this file from draft proposal into ExecPlan format with concrete steps, test commands, commit points, and acceptance criteria.
 - [x] (2026-02-27 22:52Z) Incorporated stakeholder choices: auto-load enabled, TypeScript-first vertical slice, `formatOnWrite` default ON, integration tests kept out of `selfci` gate.
-- [ ] Create `packages/lsp/` package skeleton, wire root `package.json`, and add `devShells.lsp-test` in `flake.nix`.
-- [ ] Milestone 1: config/defaults + tests (red/green) for detection inputs.
-- [ ] Milestone 2: JSON-RPC LSP client + tests (red/green).
-- [ ] Milestone 3: server detection/lifecycle manager + tests (red/green).
-- [ ] Milestone 4: write/edit interceptor + tests (red/green).
-- [ ] Milestone 5: single `lsp` tool + tests (red/green).
-- [ ] Milestone 6: extension wiring, system prompt hint, and integration tests with real TypeScript server.
-- [ ] Update README usage docs and run full validation (`npm test`, `selfci check`, manual smoke).
+- [x] (2026-02-27 23:20Z) Create `packages/lsp/` package skeleton, wire root `package.json`, and add `devShells.lsp-test` in `flake.nix`.
+- [x] (2026-02-27 23:25Z) Milestone 1: config/defaults + tests (red/green) for detection inputs. 8/8 passing.
+- [x] (2026-02-27 23:30Z) Milestone 2: JSON-RPC LSP client + tests (red/green). 13/13 passing.
+- [x] (2026-02-27 23:35Z) Milestone 3: server detection/lifecycle manager + tests (red/green). 11/11 passing.
+- [x] (2026-02-27 23:40Z) Milestone 4: write/edit interceptor + tests (red/green). 9/9 passing.
+- [x] (2026-02-27 23:45Z) Milestone 5: single `lsp` tool + tests (red/green). 11/11 passing.
+- [x] (2026-02-27 23:50Z) Milestone 6: extension wiring, system prompt hint. 8/8 passing.
+- [x] (2026-02-27 23:55Z) Update README usage docs and run full validation (`npm test` 342/342 passing).
+- [ ] Integration tests with real TypeScript server (requires `nix develop .#lsp-test`).
+- [ ] `selfci check` validation.
 
 
 ## Surprises & Discoveries
 
 - Observation: repo test conventions now avoid placing tests in extension directories because pi autoloads `*.ts` extension files.
-  Evidence: `README.md` section “Testing” and existing tests in `test/extensions/`.
+  Evidence: `README.md` section "Testing" and existing tests in `test/extensions/`.
 
-- Observation: this repository’s tests run in plain Node (`node --experimental-strip-types`) and should avoid introducing hard runtime dependencies that are not guaranteed in local test runs.
+- Observation: this repository's tests run in plain Node (`node --experimental-strip-types`) and should avoid introducing hard runtime dependencies that are not guaranteed in local test runs.
   Evidence: existing `web_search` extension uses plain JSON-schema-like objects instead of TypeBox runtime imports.
+
+- Observation: server-manager tests that use the default `typescript-language-server` command fail when the binary is not in PATH (e.g. default dev shell). Tests must use `node` or another always-available binary as the command for unit tests.
+  Evidence: initial server-manager test run had 2 failures for extension match routing, fixed by using `node` as command.
+
+- Observation: `setInterval` in extension code keeps the Node process alive after tests complete. Must call `.unref()` on timers that run in extension lifecycle hooks.
+  Evidence: extension.test.ts hung until `timer.unref()` was added to the idle shutdown interval.
+
+- Observation: `pi.sendMessage()` with a plain string crashes pi's compaction code (`message.content is not iterable`). Pi expects messages with a `.content` array of content blocks, not raw strings. Startup status notifications should be omitted or use a different API.
+  Evidence: real pi session crashed at `compaction.js:192` when the extension called `pi.sendMessage("LSP detected: ...")`.
 
 
 ## Decision Log
@@ -80,7 +91,19 @@ The user-visible benefit is better autonomous coding with less prompt waste: no 
 
 ## Outcomes & Retrospective
 
-(To be filled at each milestone completion and at final completion.)
+### Milestone 0–6 completion (2026-02-27)
+
+All unit test milestones completed in a single session. Total new tests: 54 (config: 8, lsp-client: 13, server-manager: 11, interceptor: 9, lsp-tool: 11, extension: 8 — but test counts differ slightly from plan due to test refinement during implementation). Full suite runs 342 tests with 0 failures.
+
+Key implementation notes:
+- No external npm dependencies added; entire LSP client is built on Node built-ins.
+- Frame parser handles chunked, sticky, and malformed frames robustly.
+- Recursion guard in interceptor uses {toolCallId, path} keying with TTL cleanup.
+- Extension auto-registers the `lsp` tool unconditionally (simplifies startup); prompt hint is conditional on server detection.
+
+Remaining:
+- Integration tests with real `typescript-language-server` require `nix develop .#lsp-test` and are not yet written with real assertions.
+- `selfci check` not yet validated (requires nix shell).
 
 
 ## Context and Orientation
@@ -189,7 +212,7 @@ Suggested commit message:
 
     node --experimental-strip-types --test packages/lsp/test/config.test.ts
 
-Expected red output includes at least one assertion failure such as “Cannot find module '../lib/config.ts'” or merge expectation mismatches.
+Expected red output includes at least one assertion failure such as "Cannot find module '../lib/config.ts'" or merge expectation mismatches.
 
 7. Implement `packages/lsp/lib/types.ts` and `packages/lsp/lib/config.ts` with concrete interfaces:
 
@@ -312,7 +335,7 @@ Suggested commit message:
 - sends didOpen/didChange/didSave in correct order
 - waits for diagnostics up to timeout then continues
 - appends deterministic diagnostics block format:
-  `[server-name] N issue(s):` + `path:line:column — message`
+  `[server-name] N issue(s):` + `path:line:column - message`
 - suppresses duplicate diagnostics block when no diagnostics
 - format-on-write applies edits and rewrites file
 - recursion guard prevents infinite loop when rewrite triggers second `tool_result`
@@ -446,7 +469,7 @@ Suggested commit message:
 
     feat(lsp): wire extension lifecycle, add integration tests, and document usage
 
-41. Update this plan’s living sections (`Progress`, `Surprises`, `Decision Log`, `Outcomes`) with actual timestamps and outcomes from execution.
+41. Update this plan's living sections (`Progress`, `Surprises`, `Decision Log`, `Outcomes`) with actual timestamps and outcomes from execution.
 
 ---
 
@@ -483,13 +506,13 @@ Manual smoke (from repo root in lsp shell):
 
 Then prompt:
 
-- “Write `tmp/lsp-smoke.ts` with `const x: string = 1` and show diagnostics.”
-- “Use `lsp` action `definition` on symbol `x` in that file.”
+- "Write `tmp/lsp-smoke.ts` with `const x: string = 1` and show diagnostics."
+- "Use `lsp` action `definition` on symbol `x` in that file."
 
 Expected observable output includes diagnostic line like:
 
     [typescript-language-server] 1 issue(s):
-      tmp/lsp-smoke.ts:1:7 — Type 'number' is not assignable to type 'string'.
+      tmp/lsp-smoke.ts:1:7 - Type 'number' is not assignable to type 'string'.
 
 
 ## Idempotence and Recovery
