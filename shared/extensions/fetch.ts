@@ -17,8 +17,8 @@ const parameters = {
     url: { type: "string", description: "URL to fetch" },
     timeout: { type: "number", description: "Timeout in seconds (default: 20)" },
     raw: { type: "boolean", description: "Return raw content without text transforms" },
-    maxBytes: { type: "number", description: "Maximum output bytes before truncation" },
-    maxLines: { type: "number", description: "Maximum output lines before truncation" },
+    maxBytes: { type: "number", description: "Maximum output bytes before truncation (clamped to 0..80KB, default ~50KB)" },
+    maxLines: { type: "number", description: "Maximum output lines before truncation (clamped to 0..3000, default 2000)" },
   },
   required: ["url"],
   additionalProperties: false,
@@ -89,7 +89,7 @@ function renderAsSimpleComponent(text: string): ToolComponent {
     render(_width: number): string[] {
       return text.split("\n");
     },
-    invalidate() {},
+    invalidate() { },
   };
 }
 
@@ -109,12 +109,29 @@ export function createFetchToolDefinition(fetchImpl: FetchExecutor = fetchUrl) {
       _onUpdate?: unknown,
       _ctx?: unknown,
     ) {
+      // Clamp model-requested limits to prevent a single fetch from
+      // consuming excessive context. The defaults (50 KB / 2000 lines)
+      // are already generous; allowing the model to exceed them
+      // significantly has led to 100K+ token tool results that persist
+      // for the rest of the session.
+      const MAX_ALLOWED_BYTES = 80 * 1024; // 80 KB hard ceiling
+      const MAX_ALLOWED_LINES = 3000;
+
+      const maxBytes =
+        params.maxBytes != null
+          ? Math.min(params.maxBytes, MAX_ALLOWED_BYTES)
+          : undefined;
+      const maxLines =
+        params.maxLines != null
+          ? Math.min(params.maxLines, MAX_ALLOWED_LINES)
+          : undefined;
+
       const response = await fetchImpl({
         url: params.url,
         timeoutSeconds: params.timeout,
         raw: params.raw,
-        maxBytes: params.maxBytes,
-        maxLines: params.maxLines,
+        maxBytes,
+        maxLines,
       });
 
       return {
