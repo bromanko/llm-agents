@@ -21,6 +21,8 @@ Add this marketplace to your Claude Code installation:
 ### jj
 Tools and commands for working with Jujutsu (jj) version control.
 
+> **Context tip:** Always use `--color=never` (or `--git` for diffs) when running jj commands via Bash. ANSI escape codes waste 2-3x the tokens.
+
 **Commands:**
 - `/jj:commit` - Analyze jj status and create logical commits with descriptive messages
 - `/jj:workspace-cleanup` - Clean up empty jujutsu workspaces

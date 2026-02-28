@@ -41,13 +41,22 @@ This skill helps create well-structured commits in a jujutsu repository by:
 5. Creating commits with descriptive messages following conventional commit format
 6. Using a linear commit workflow with `jj commit -m "message"`
 
+## Important: avoid ANSI color output
+
+Always pass `--color=never` when running jj commands via Bash.
+Without it, jj may emit ANSI escape codes that waste 2-3x the tokens.
+
+- `jj diff --color=never` or `jj diff --git` (plain text format)
+- `jj log --color=never ...`
+- `jj show --color=never ...`
+
 ## Implementation
 
 When invoked:
 
 1. Run `jj status` to see all changes
-2. Run `jj diff` to understand the nature of modifications
-3. Check `jj log -r 'mutable() & ancestors(@) & ~@'` to see if there are mutable commits in the stack
+2. Run `jj diff --git` to understand the nature of modifications (plain diff, no color)
+3. Check `jj log --color=never -r 'mutable() & ancestors(@) & ~@'` to see if there are mutable commits in the stack
 4. If mutable commits exist in the stack:
    - Analyze whether changes look like fixes/updates to existing commits (typos, refinements, addressing feedback)
    - If appropriate, run `jj absorb` to automatically move changes into ancestor commits
@@ -70,7 +79,7 @@ When invoked:
 7. **Do NOT merge unrelated branches or workspaces.** This skill only commits working copy changes. Ignore other heads, bookmarks, or workspaces—they are intentionally separate.
 8. After creating commits, show the result using:
    ```
-   jj log -r 'ancestors(@, 5)' -T 'concat(change_id.short(), ": ", description)'
+   jj log --color=never -r 'ancestors(@, 5)' -T 'concat(change_id.short(), ": ", description)'
    ```
 
 ## Notes
