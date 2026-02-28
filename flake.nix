@@ -21,6 +21,15 @@
         default = pkgs.mkShell {
           packages = [
             pkgs.selfci
+
+            # LSP servers
+            pkgs.nodePackages.typescript-language-server
+            pkgs.nodePackages.typescript
+            pkgs.nil # Nix
+            pkgs.nodePackages.bash-language-server
+            pkgs.yaml-language-server
+            pkgs.nodePackages.vscode-json-languageserver
+            pkgs.marksman # Markdown
           ];
         };
 
