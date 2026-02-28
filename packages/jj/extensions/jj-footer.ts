@@ -12,349 +12,403 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { execSync } from "node:child_process";
+
+import {
+  detectWorkspaceName,
+  getJjInfo,
+  type FooterSessionEntry,
+  type JjInfo,
+} from "../lib/footer.ts";
 import { isJjRepo } from "../lib/utils.ts";
 
-/**
- * Detect the current jj workspace name from session state.
- * The jj-workspace extension persists the active workspace as a
- * `jj-workspace-state` custom entry. We read the latest one to
- * stay in sync without spawning extra subprocesses.
- * Falls back to querying jj directly if no session state is found.
- */
-function detectWorkspaceName(cwd: string, entries?: { type?: string; customType?: string; data?: unknown }[]): string | null {
-	// Check session state from jj-workspace extension (most reliable, zero cost)
-	if (entries) {
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
-			const isWsEntry =
-				(entry.customType === "jj-workspace-state") ||
-				(entry.type === "jj-workspace-state");
-			if (!isWsEntry) continue;
-
-			const data = entry.data;
-			if (data === null || data === undefined) return null;
-			if (typeof data === "object" && data !== null && "name" in data) {
-				const name = (data as { name: unknown }).name;
-				return typeof name === "string" ? name : null;
-			}
-			return null;
-		}
-	}
-
-	// Fallback: query jj directly (for when jj-workspace extension is not loaded)
-	try {
-		const ourChangeId = execSync(
-			`jj log -r '@' -T 'change_id' --no-graph`,
-			{ cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] },
-		).trim();
-
-		const listOutput = execSync(
-			`jj workspace list -T 'name ++ ":" ++ self.target().change_id() ++ "\\n"'`,
-			{ cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] },
-		).trim();
-
-		for (const line of listOutput.split("\n")) {
-			const sep = line.indexOf(":");
-			if (sep === -1) continue;
-			const name = line.slice(0, sep);
-			const changeId = line.slice(sep + 1);
-			if (changeId === ourChangeId && name !== "default") {
-				return name;
-			}
-		}
-	} catch {
-		// Not in a workspace or jj not available
-	}
-	return null;
+interface UsageCostLike {
+  total: number;
 }
 
-interface JjInfo {
-	uniquePrefix: string;
-	rest: string;
-	description: string;
-	empty: boolean;
-	insertions: number;
-	deletions: number;
+interface UsageLike {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: UsageCostLike;
 }
 
-function getJjInfo(cwd: string): JjInfo | null {
-	try {
-		// Get change ID parts and description
-		const logOutput = execSync(
-			`jj log -r '@' -T 'concat(change_id.shortest(0), "|", change_id.short(), "|", description.first_line(), "|", if(empty, "empty", "dirty"))' --no-graph`,
-			{ cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] },
-		).trim();
+type AssistantMessageWithUsage = AssistantMessage & {
+  role: "assistant";
+  usage: UsageLike;
+  stopReason?: unknown;
+};
 
-		const [uniquePrefix, fullShort, description, emptyFlag] = logOutput.split("|");
+type AssistantMessageEntry = {
+  type: "message";
+  message: AssistantMessageWithUsage;
+};
 
-		// The rest is the portion of the short ID after the unique prefix
-		const rest = fullShort.slice(uniquePrefix.length);
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
+const ANSI_CONTROL_SEQUENCE_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const ANSI_OSC_SEQUENCE_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
+const UNSAFE_CONTROL_CHARS_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
-		// Get diff stats for working copy
-		let insertions = 0;
-		let deletions = 0;
-		try {
-			const statOutput = execSync(`jj diff --stat`, {
-				cwd,
-				encoding: "utf-8",
-				timeout: 3000,
-				stdio: ["pipe", "pipe", "pipe"],
-			}).trim();
+interface SessionStats {
+  totalInput: number;
+  totalOutput: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  totalCost: number;
+  contextTokens: number;
+}
 
-			// Parse the summary line: "N files changed, X insertions(+), Y deletions(-)"
-			const match = statOutput.match(/(\d+) insertions?\(\+\).*?(\d+) deletions?\(-\)/);
-			if (match) {
-				insertions = parseInt(match[1], 10);
-				deletions = parseInt(match[2], 10);
-			}
-		} catch {
-			// diff stats are best-effort
-		}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
-		return {
-			uniquePrefix,
-			rest,
-			description: description || "",
-			empty: emptyFlag === "empty",
-			insertions,
-			deletions,
-		};
-	} catch {
-		return null;
-	}
+function isNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isUsageLike(value: unknown): value is UsageLike {
+  if (!isRecord(value)) return false;
+  if (!isNumber(value.input)) return false;
+  if (!isNumber(value.output)) return false;
+  if (!isNumber(value.cacheRead)) return false;
+  if (!isNumber(value.cacheWrite)) return false;
+  if (!isRecord(value.cost)) return false;
+  return isNumber(value.cost.total);
+}
+
+function isAssistantMessageWithUsage(value: unknown): value is AssistantMessageWithUsage {
+  if (!isRecord(value)) return false;
+  if (value.role !== "assistant") return false;
+  return isUsageLike(value.usage);
+}
+
+function isAssistantMessageEntry(value: unknown): value is AssistantMessageEntry {
+  if (!isRecord(value)) return false;
+  if (value.type !== "message") return false;
+  return isAssistantMessageWithUsage(value.message);
+}
+
+function isFooterSessionEntry(value: unknown): value is FooterSessionEntry {
+  return isRecord(value);
+}
+
+function getThinkingLevelFromContext(context: unknown): string | null {
+  if (!isRecord(context)) return null;
+  const level = context.thinkingLevel;
+  return typeof level === "string" ? level : null;
+}
+
+function stripAnsiIfPresent(text: string): string {
+  if (!text.includes("\x1b[")) return text;
+  return text.replace(ANSI_ESCAPE_RE, "");
+}
+
+function sanitizeFooterText(text: string): string {
+  if (!text) return "";
+
+  const sanitized = text
+    .replace(ANSI_OSC_SEQUENCE_RE, "")
+    .replace(ANSI_CONTROL_SEQUENCE_RE, "")
+    .replace(/\x1b/g, "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(UNSAFE_CONTROL_CHARS_RE, "")
+    .replace(/ +/g, " ")
+    .trim();
+
+  return sanitized;
 }
 
 function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
+  return `${Math.round(count / 1000000)}M`;
 }
 
-export default function (pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => {
-		if (!ctx.hasUI) return;
-		if (!isJjRepo(ctx.cwd)) return;
+function computeSessionStats(entries: unknown[], branchEntries: unknown[]): SessionStats {
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCacheRead = 0;
+  let totalCacheWrite = 0;
+  let totalCost = 0;
 
-		ctx.ui.setFooter((tui, theme, footerData) => {
-			// Poll for jj changes periodically
-			let cachedJjInfo: JjInfo | null = null;
-			let cachedWsName: string | null = null;
-			let lastFetch = 0;
-			const CACHE_MS = 3000;
+  for (const entry of entries) {
+    if (!isAssistantMessageEntry(entry)) continue;
 
-			function refreshCache() {
-				cachedJjInfo = getJjInfo(ctx.cwd);
-				cachedWsName = detectWorkspaceName(ctx.cwd, ctx.sessionManager.getEntries() as any[]);
-				lastFetch = Date.now();
-			}
+    const usage = entry.message.usage;
+    totalInput += usage.input;
+    totalOutput += usage.output;
+    totalCacheRead += usage.cacheRead;
+    totalCacheWrite += usage.cacheWrite;
+    totalCost += usage.cost.total;
+  }
 
-			function ensureCache() {
-				if (Date.now() - lastFetch > CACHE_MS) {
-					refreshCache();
-				}
-			}
+  let contextTokens = 0;
+  for (let i = branchEntries.length - 1; i >= 0; i--) {
+    const entry = branchEntries[i];
+    if (!isAssistantMessageEntry(entry)) continue;
 
-			function getInfo(): JjInfo | null {
-				ensureCache();
-				return cachedJjInfo;
-			}
+    const message = entry.message;
+    if (message.stopReason === "aborted") continue;
 
-			function getWsName(): string | null {
-				ensureCache();
-				return cachedWsName;
-			}
+    const usage = message.usage;
+    contextTokens =
+      usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+    break;
+  }
 
-			return {
-				invalidate() {
-					lastFetch = 0; // Force refresh on next render
-				},
-				render(width: number): string[] {
-					const state = ctx.sessionManager as any;
-					const entries = ctx.sessionManager.getEntries();
+  return {
+    totalInput,
+    totalOutput,
+    totalCacheRead,
+    totalCacheWrite,
+    totalCost,
+    contextTokens,
+  };
+}
 
-					// --- Line 1: cwd + jj info ---
-					let pwd = process.cwd();
-					const home = process.env.HOME || process.env.USERPROFILE;
-					if (home && pwd.startsWith(home)) {
-						pwd = `~${pwd.slice(home.length)}`;
-					}
+export default function(pi: ExtensionAPI) {
+  pi.on("session_start", async (_event, ctx) => {
+    if (!ctx.hasUI) return;
+    if (!isJjRepo(ctx.cwd)) return;
 
-					// Workspace indicator (yellow, between cwd and change ID)
-					const wsName = getWsName();
-					if (wsName) {
-						pwd += " " + theme.fg("warning", `⎇ ${wsName}`);
-					}
+    ctx.ui.setFooter((_tui, theme, footerData) => {
+      // Poll for jj changes periodically
+      let cachedJjInfo: JjInfo | null = null;
+      let cachedWsName: string | null = null;
+      let lastFetch = 0;
+      const CACHE_MS = 3000;
 
-					const jj = getInfo();
-					if (jj) {
-						// Style change ID like jj log: unique prefix highlighted, rest dimmed
-						const changeId =
-							theme.fg("accent", theme.bold(jj.uniquePrefix)) + theme.fg("dim", jj.rest);
+      let cachedSessionStats: SessionStats | null = null;
+      let cachedEntriesLength = -1;
+      let cachedLastEntry: unknown = undefined;
+      let cachedBranchLength = -1;
+      let cachedLastBranchEntry: unknown = undefined;
 
-						let jjParts = changeId;
+      function refreshCache() {
+        cachedJjInfo = getJjInfo(ctx.cwd);
 
-						if (jj.description) {
-							jjParts += " " + theme.fg("muted", jj.description);
-						} else if (jj.empty) {
-							jjParts += " " + theme.fg("dim", "(empty)");
-						} else {
-							jjParts += " " + theme.fg("dim", "(no description)");
-						}
+        const entries = ctx.sessionManager
+          .getEntries()
+          .filter(isFooterSessionEntry);
+        cachedWsName = detectWorkspaceName(ctx.cwd, entries);
 
-						// Diff stats
-						const diffParts: string[] = [];
-						if (jj.insertions > 0) {
-							diffParts.push(theme.fg("success", `+${jj.insertions}`));
-						}
-						if (jj.deletions > 0) {
-							diffParts.push(theme.fg("error", `-${jj.deletions}`));
-						}
-						if (diffParts.length > 0) {
-							jjParts += " " + diffParts.join(" ");
-						}
+        lastFetch = Date.now();
+      }
 
-						pwd = `${pwd} ${jjParts}`;
-					} else {
-						// Fall back to git branch if not a jj repo or jj failed
-						const branch = footerData.getGitBranch();
-						if (branch) {
-							pwd = `${pwd} (${branch})`;
-						}
-					}
+      function ensureCache() {
+        if (Date.now() - lastFetch > CACHE_MS) {
+          refreshCache();
+        }
+      }
 
-					// Session name
-					const sessionName = ctx.sessionManager.getSessionName();
-					if (sessionName) {
-						pwd = `${pwd} • ${sessionName}`;
-					}
+      function getInfo(): JjInfo | null {
+        ensureCache();
+        return cachedJjInfo;
+      }
 
-					// --- Line 2: token stats + model (replicate default behavior) ---
-					let totalInput = 0;
-					let totalOutput = 0;
-					let totalCacheRead = 0;
-					let totalCacheWrite = 0;
-					let totalCost = 0;
+      function getWsName(): string | null {
+        ensureCache();
+        return cachedWsName;
+      }
 
-					for (const entry of entries) {
-						if (entry.type === "message" && entry.message.role === "assistant") {
-							const m = entry.message as AssistantMessage;
-							totalInput += m.usage.input;
-							totalOutput += m.usage.output;
-							totalCacheRead += m.usage.cacheRead;
-							totalCacheWrite += m.usage.cacheWrite;
-							totalCost += m.usage.cost.total;
-						}
-					}
+      function getSessionStats(): SessionStats {
+        const entries = ctx.sessionManager.getEntries();
+        const branchEntries = ctx.sessionManager.getBranch();
 
-					// Context percentage from last non-aborted assistant message
-					const branchEntries = ctx.sessionManager.getBranch();
-					const messages = branchEntries
-						.filter((e) => e.type === "message")
-						.map((e) => (e as any).message);
-					const lastAssistant = messages
-						.slice()
-						.reverse()
-						.find((m: any) => m.role === "assistant" && m.stopReason !== "aborted");
+        const entriesLength = entries.length;
+        const branchLength = branchEntries.length;
+        const lastEntry = entriesLength > 0 ? entries[entriesLength - 1] : undefined;
+        const lastBranchEntry = branchLength > 0 ? branchEntries[branchLength - 1] : undefined;
 
-					const contextTokens = lastAssistant
-						? lastAssistant.usage.input +
-							lastAssistant.usage.output +
-							lastAssistant.usage.cacheRead +
-							lastAssistant.usage.cacheWrite
-						: 0;
-					const contextWindow = ctx.model?.contextWindow || 0;
-					const contextPercentValue =
-						contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
-					const contextPercent = contextPercentValue.toFixed(1);
+        const isCacheHit =
+          cachedSessionStats !== null
+          && cachedEntriesLength === entriesLength
+          && cachedLastEntry === lastEntry
+          && cachedBranchLength === branchLength
+          && cachedLastBranchEntry === lastBranchEntry;
 
-					const statsParts: string[] = [];
-					if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
-					if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
-					if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
-					if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
-					if (totalCost) statsParts.push(`$${totalCost.toFixed(3)}`);
+        if (isCacheHit) {
+          return cachedSessionStats;
+        }
 
-					let contextPercentStr: string;
-					const contextPercentDisplay = `${contextPercent}%/${formatTokens(contextWindow)}`;
-					if (contextPercentValue > 90) {
-						contextPercentStr = theme.fg("error", contextPercentDisplay);
-					} else if (contextPercentValue > 70) {
-						contextPercentStr = theme.fg("warning", contextPercentDisplay);
-					} else {
-						contextPercentStr = contextPercentDisplay;
-					}
-					statsParts.push(contextPercentStr);
+        cachedSessionStats = computeSessionStats(entries, branchEntries);
+        cachedEntriesLength = entriesLength;
+        cachedLastEntry = lastEntry;
+        cachedBranchLength = branchLength;
+        cachedLastBranchEntry = lastBranchEntry;
 
-					let statsLeft = statsParts.join(" ");
-					const statsLeftWidth = visibleWidth(statsLeft);
+        return cachedSessionStats;
+      }
 
-					// Model + thinking level on the right
-					const modelName = ctx.model?.id || "no-model";
-					let rightSide = modelName;
-					if (ctx.model?.reasoning) {
-						const thinkingLevel = (ctx as any).thinkingLevel || pi.getThinkingLevel();
-						rightSide =
-							thinkingLevel === "off"
-								? `${modelName} • thinking off`
-								: `${modelName} • ${thinkingLevel}`;
-					}
+      return {
+        invalidate() {
+          lastFetch = 0; // Force refresh on next render
+          cachedSessionStats = null;
+          cachedEntriesLength = -1;
+          cachedLastEntry = undefined;
+          cachedBranchLength = -1;
+          cachedLastBranchEntry = undefined;
+        },
+        render(width: number): string[] {
+          // --- Line 1: cwd + jj info ---
+          let pwd = process.cwd();
+          const home = process.env.HOME || process.env.USERPROFILE;
+          if (home && pwd.startsWith(home)) {
+            pwd = `~${pwd.slice(home.length)}`;
+          }
 
-					if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
-						const withProvider = `(${ctx.model.provider}) ${rightSide}`;
-						if (statsLeftWidth + 2 + visibleWidth(withProvider) <= width) {
-							rightSide = withProvider;
-						}
-					}
+          // Workspace indicator (yellow, between cwd and change ID)
+          const wsName = getWsName();
+          const safeWsName = wsName ? sanitizeFooterText(wsName) : "";
+          if (safeWsName) {
+            pwd += " " + theme.fg("warning", `⎇ ${safeWsName}`);
+          }
 
-					const rightSideWidth = visibleWidth(rightSide);
-					const totalNeeded = statsLeftWidth + 2 + rightSideWidth;
+          const jj = getInfo();
+          if (jj) {
+            // Style change ID like jj log: unique prefix highlighted, rest dimmed
+            const changeId =
+              theme.fg("accent", theme.bold(jj.uniquePrefix)) + theme.fg("dim", jj.rest);
 
-					let statsLine: string;
-					if (totalNeeded <= width) {
-						const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
-						statsLine = statsLeft + padding + rightSide;
-					} else {
-						const availableForRight = width - statsLeftWidth - 2;
-						if (availableForRight > 3) {
-							const plainRight = rightSide.replace(/\x1b\[[0-9;]*m/g, "");
-							const truncated = plainRight.substring(0, availableForRight);
-							const padding = " ".repeat(width - statsLeftWidth - truncated.length);
-							statsLine = statsLeft + padding + truncated;
-						} else {
-							statsLine = statsLeft;
-						}
-					}
+            let jjParts = changeId;
 
-					const dimStatsLeft = theme.fg("dim", statsLeft);
-					const remainder = statsLine.slice(statsLeft.length);
-					const dimRemainder = theme.fg("dim", remainder);
+            const safeDescription = sanitizeFooterText(jj.description);
+            if (safeDescription) {
+              jjParts += " " + theme.fg("muted", safeDescription);
+            } else if (jj.empty) {
+              jjParts += " " + theme.fg("dim", "(empty)");
+            } else {
+              jjParts += " " + theme.fg("dim", "(no description)");
+            }
 
-					const lines = [
-						truncateToWidth(theme.fg("dim", pwd), width),
-						dimStatsLeft + dimRemainder,
-					];
+            // Diff stats
+            const diffParts: string[] = [];
+            if (jj.insertions > 0) {
+              diffParts.push(theme.fg("success", `+${jj.insertions}`));
+            }
+            if (jj.deletions > 0) {
+              diffParts.push(theme.fg("error", `-${jj.deletions}`));
+            }
+            if (diffParts.length > 0) {
+              jjParts += " " + diffParts.join(" ");
+            }
 
-					// Extension statuses
-					const extensionStatuses = footerData.getExtensionStatuses();
-					if (extensionStatuses.size > 0) {
-						const statusLine = Array.from(extensionStatuses.entries())
-							.sort(([a], [b]) => a.localeCompare(b))
-							.map(([, text]) =>
-								text
-									.replace(/[\r\n\t]/g, " ")
-									.replace(/ +/g, " ")
-									.trim(),
-							)
-							.join(" ");
-						lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
-					}
+            pwd = `${pwd} ${jjParts}`;
+          } else {
+            // Fall back to git branch if not a jj repo or jj failed
+            const branch = footerData.getGitBranch();
+            if (branch) {
+              pwd = `${pwd} (${branch})`;
+            }
+          }
 
-					return lines;
-				},
-			};
-		});
-	});
+          // Session name
+          const sessionName = ctx.sessionManager.getSessionName();
+          const safeSessionName = sessionName ? sanitizeFooterText(sessionName) : "";
+          if (safeSessionName) {
+            pwd = `${pwd} • ${safeSessionName}`;
+          }
+
+          // --- Line 2: token stats + model (replicate default behavior) ---
+          const sessionStats = getSessionStats();
+          const {
+            totalInput,
+            totalOutput,
+            totalCacheRead,
+            totalCacheWrite,
+            totalCost,
+            contextTokens,
+          } = sessionStats;
+
+          const contextWindow = ctx.model?.contextWindow || 0;
+          const contextPercentValue =
+            contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
+          const contextPercent = contextPercentValue.toFixed(1);
+
+          const statsParts: string[] = [];
+          if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
+          if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
+          if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
+          if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
+          if (totalCost) statsParts.push(`$${totalCost.toFixed(3)}`);
+
+          let contextPercentStr: string;
+          const contextPercentDisplay = `${contextPercent}%/${formatTokens(contextWindow)}`;
+          if (contextPercentValue > 90) {
+            contextPercentStr = theme.fg("error", contextPercentDisplay);
+          } else if (contextPercentValue > 70) {
+            contextPercentStr = theme.fg("warning", contextPercentDisplay);
+          } else {
+            contextPercentStr = contextPercentDisplay;
+          }
+          statsParts.push(contextPercentStr);
+
+          const statsLeft = statsParts.join(" ");
+          const statsLeftWidth = visibleWidth(statsLeft);
+
+          // Model + thinking level on the right
+          const modelName = ctx.model?.id || "no-model";
+          let rightSide = modelName;
+          if (ctx.model?.reasoning) {
+            const thinkingLevel = getThinkingLevelFromContext(ctx) ?? pi.getThinkingLevel();
+            rightSide =
+              thinkingLevel === "off"
+                ? `${modelName} • thinking off`
+                : `${modelName} • ${thinkingLevel}`;
+          }
+
+          if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
+            const withProvider = `(${ctx.model.provider}) ${rightSide}`;
+            if (statsLeftWidth + 2 + visibleWidth(withProvider) <= width) {
+              rightSide = withProvider;
+            }
+          }
+
+          const rightSideWidth = visibleWidth(rightSide);
+          const totalNeeded = statsLeftWidth + 2 + rightSideWidth;
+
+          let statsLine: string;
+          if (totalNeeded <= width) {
+            const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
+            statsLine = theme.fg("dim", statsLeft) + padding + theme.fg("dim", rightSide);
+          } else {
+            const availableForRight = width - statsLeftWidth - 2;
+            if (availableForRight > 3) {
+              const plainRight = stripAnsiIfPresent(rightSide);
+              const truncatedRight = plainRight.substring(0, availableForRight);
+              const truncatedWidth = visibleWidth(truncatedRight);
+              const padding = " ".repeat(Math.max(0, width - statsLeftWidth - truncatedWidth));
+              statsLine = theme.fg("dim", statsLeft) + padding + theme.fg("dim", truncatedRight);
+            } else {
+              statsLine = theme.fg("dim", statsLeft);
+            }
+          }
+
+          const lines = [
+            truncateToWidth(theme.fg("dim", pwd), width),
+            statsLine,
+          ];
+
+          // Extension statuses
+          const extensionStatuses = footerData.getExtensionStatuses();
+          if (extensionStatuses.size > 0) {
+            const statusLine = Array.from(extensionStatuses.entries())
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([, text]) =>
+                text
+                  .replace(/[\r\n\t]/g, " ")
+                  .replace(/ +/g, " ")
+                  .trim(),
+              )
+              .join(" ");
+            lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+          }
+
+          return lines;
+        },
+      };
+    });
+  });
 }
