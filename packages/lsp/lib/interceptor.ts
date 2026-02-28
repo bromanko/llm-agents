@@ -43,7 +43,7 @@ export interface InterceptorDeps {
   getServerDiagnostics: (serverName: string, uri: string) => LspDiagnostic[];
   getServerName: (serverName: string) => string;
   ensureServerForFile: (filePath: string) => Promise<ManagedServer | null>;
-  formatFile: (filePath: string, serverName: string) => Promise<string | null>;
+  formatFile: (filePath: string, serverName: string, content: string) => Promise<string | null>;
   formatOnWrite: boolean;
   diagnosticsOnWrite: boolean;
   autoCodeActions: boolean;
@@ -197,7 +197,7 @@ export function createToolResultInterceptor(deps: InterceptorDeps): ToolResultIn
 
       // Apply formatting if enabled
       if (deps.formatOnWrite) {
-        const formatted = await deps.formatFile(filePath, serverName);
+        const formatted = await deps.formatFile(filePath, serverName, content);
         if (formatted !== null && formatted !== content) {
           fs.writeFileSync(filePath, formatted);
           content = formatted;

@@ -33,6 +33,7 @@ export default function registerLspExtension(pi: ExtensionAPI): void {
   let hasDetectedServers = false;
   let cwd = process.cwd();
   let sessionCtx: any = null;
+  let interceptor: ReturnType<typeof createToolResultInterceptor> | null = null;
 
   // --- Helper: get/set diagnostics from cache ---
 
@@ -51,7 +52,7 @@ export default function registerLspExtension(pi: ExtensionAPI): void {
 
   // --- Helper: request formatting from LSP server ---
 
-  async function formatFile(filePath: string, serverName: string): Promise<string | null> {
+  async function formatFile(filePath: string, serverName: string, content: string): Promise<string | null> {
     if (!serverManager) return null;
     const server = serverManager.getRunningServer(serverName);
     if (!server?.client) return null;
@@ -65,8 +66,10 @@ export default function registerLspExtension(pi: ExtensionAPI): void {
 
       if (!edits || edits.length === 0) return null;
 
-      // Apply edits to produce formatted text
-      let content = fs.readFileSync(filePath, "utf-8");
+      // Apply edits to the content that was sent to the LSP server.
+      // We must NOT re-read from disk here — the edits are based on the
+      // content the LSP server has (sent via didOpen/didChange), which
+      // must match what we apply them to.
       // Sort edits in reverse order to apply from bottom to top
       const sorted = [...edits].sort((a, b) => {
         const lineDiff = b.range.start.line - a.range.start.line;
@@ -140,6 +143,35 @@ export default function registerLspExtension(pi: ExtensionAPI): void {
       }, 60_000); // check every minute
       timer.unref();
     }
+
+    // Create the interceptor once so documentVersions and activeGuard
+    // persist across tool_result events. Re-creating per event caused
+    // duplicate didOpen notifications (never didChange), which some
+    // LSP servers reject — leaving stale content that produced wrong
+    // formatting edits.
+    interceptor = createToolResultInterceptor({
+      resolveServerForFile: (fp) => serverManager!.resolveServerForFile(fp),
+      getServerDiagnostics: (name, uri) => getDiagnostics(name, uri),
+      getServerName: (name) => name,
+      ensureServerForFile: async (fp) => {
+        const server = await serverManager!.ensureServerForFile(fp);
+        if (server?.client) {
+          const cacheKey = `diag-listener-${server.name}`;
+          if (!(diagnosticsCache as any)[cacheKey]) {
+            server.client.onDiagnostics((uri, diagnostics) => {
+              setDiagnostics(server.name, uri, diagnostics);
+            });
+            (diagnosticsCache as any)[cacheKey] = true;
+          }
+        }
+        return server;
+      },
+      formatFile: async (fp, name, content) => formatFile(fp, name, content),
+      formatOnWrite: config.formatOnWrite,
+      diagnosticsOnWrite: config.diagnosticsOnWrite,
+      autoCodeActions: config.autoCodeActions,
+      diagnosticsTimeoutMs: 3000,
+    });
   });
 
   pi.on("session_shutdown", async () => {
@@ -147,6 +179,7 @@ export default function registerLspExtension(pi: ExtensionAPI): void {
       await serverManager.shutdownAll();
     }
     diagnosticsCache.clear();
+    interceptor = null;
     sessionCtx = null;
   });
 
@@ -164,34 +197,7 @@ export default function registerLspExtension(pi: ExtensionAPI): void {
   // --- Tool_result interceptor ---
 
   pi.on("tool_result", async (event: any, _ctx: any) => {
-    if (!serverManager || !config) return undefined;
-
-    const deps: InterceptorDeps = {
-      resolveServerForFile: (fp) => serverManager!.resolveServerForFile(fp),
-      getServerDiagnostics: (name, uri) => getDiagnostics(name, uri),
-      getServerName: (name) => name,
-      ensureServerForFile: async (fp) => {
-        const server = await serverManager!.ensureServerForFile(fp);
-        if (server?.client) {
-          // Wire up diagnostics listener if not already done
-          const cacheKey = `diag-listener-${server.name}`;
-          if (!(diagnosticsCache as any)[cacheKey]) {
-            server.client.onDiagnostics((uri, diagnostics) => {
-              setDiagnostics(server.name, uri, diagnostics);
-            });
-            (diagnosticsCache as any)[cacheKey] = true;
-          }
-        }
-        return server;
-      },
-      formatFile: async (fp, name) => formatFile(fp, name),
-      formatOnWrite: config!.formatOnWrite,
-      diagnosticsOnWrite: config!.diagnosticsOnWrite,
-      autoCodeActions: config!.autoCodeActions,
-      diagnosticsTimeoutMs: 3000,
-    };
-
-    const interceptor = createToolResultInterceptor(deps);
+    if (!interceptor) return undefined;
     return interceptor(event);
   });
 

@@ -103,9 +103,9 @@ test("sends didOpen/didChange notification via ensureServerForFile", async () =>
   const mockClient = {
     notify: (method: string, _params: unknown) => notifications.push(method),
     request: async () => null,
-    onDiagnostics: () => {},
-    onNotification: () => {},
-    destroy: () => {},
+    onDiagnostics: () => { },
+    onNotification: () => { },
+    destroy: () => { },
   };
 
   const deps = createMockDeps({
@@ -178,11 +178,11 @@ test("format-on-write applies edits and rewrites file", async () => {
       ensureServerForFile: async () => ({
         name: "test-server",
         client: {
-          notify: () => {},
+          notify: () => { },
           request: async () => null,
-          onDiagnostics: () => {},
-          onNotification: () => {},
-          destroy: () => {},
+          onDiagnostics: () => { },
+          onNotification: () => { },
+          destroy: () => { },
         },
         rootUri: "file:///tmp",
         lastActivity: Date.now(),
@@ -218,11 +218,11 @@ test("recursion guard prevents infinite loop on rewrite", async () => {
       ensureServerForFile: async () => ({
         name: "test-server",
         client: {
-          notify: () => {},
+          notify: () => { },
           request: async () => null,
-          onDiagnostics: () => {},
-          onNotification: () => {},
-          destroy: () => {},
+          onDiagnostics: () => { },
+          onNotification: () => { },
+          destroy: () => { },
         },
         rootUri: "file:///tmp",
         lastActivity: Date.now(),
@@ -270,11 +270,11 @@ test("no formatting when formatOnWrite=false", async () => {
       ensureServerForFile: async () => ({
         name: "test-server",
         client: {
-          notify: () => {},
+          notify: () => { },
           request: async () => null,
-          onDiagnostics: () => {},
-          onNotification: () => {},
-          destroy: () => {},
+          onDiagnostics: () => { },
+          onNotification: () => { },
+          destroy: () => { },
         },
         rootUri: "file:///tmp",
         lastActivity: Date.now(),
@@ -301,6 +301,229 @@ test("no formatting when formatOnWrite=false", async () => {
   }
 });
 
+// --- Bug-fix regression tests ---
+
+test("sends didOpen on first event, didChange on subsequent events for same file", async () => {
+  const notifications: Array<{ method: string; params: unknown }> = [];
+  const mockClient = {
+    notify: (method: string, params: unknown) => notifications.push({ method, params }),
+    request: async () => null,
+    onDiagnostics: () => { },
+    onNotification: () => { },
+    destroy: () => { },
+  };
+
+  const deps = createMockDeps({
+    resolveServerForFile: () => "test-server",
+    ensureServerForFile: async () => ({
+      name: "test-server",
+      client: mockClient,
+      rootUri: "file:///tmp",
+      lastActivity: Date.now(),
+    }),
+    getServerDiagnostics: () => [],
+    diagnosticsTimeoutMs: 50,
+  });
+
+  // Create ONE interceptor and call it twice for the same file
+  const interceptor = createToolResultInterceptor(deps);
+
+  const { filePath, cleanup } = createTmpFile();
+  try {
+    fs.writeFileSync(filePath, "const x = 1;");
+    await interceptor({
+      toolName: "write",
+      toolCallId: "tc1",
+      input: { path: filePath },
+      result: "File written",
+    });
+
+    // Update file content and call again with a different toolCallId
+    fs.writeFileSync(filePath, "const x = 2;");
+    await interceptor({
+      toolName: "edit",
+      toolCallId: "tc2",
+      input: { path: filePath },
+      result: "File edited",
+    });
+
+    const methods = notifications.map((n) => n.method);
+    assert.equal(methods[0], "textDocument/didOpen", "first event should send didOpen");
+    assert.equal(methods[1], "textDocument/didChange", "second event should send didChange");
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatFile receives the content read by the interceptor, not stale data", async () => {
+  const receivedContents: string[] = [];
+  const { filePath, cleanup } = createTmpFile();
+
+  try {
+    fs.writeFileSync(filePath, "version-1");
+
+    const deps = createMockDeps({
+      resolveServerForFile: () => "test-server",
+      ensureServerForFile: async () => ({
+        name: "test-server",
+        client: {
+          notify: () => { },
+          request: async () => null,
+          onDiagnostics: () => { },
+          onNotification: () => { },
+          destroy: () => { },
+        },
+        rootUri: "file:///tmp",
+        lastActivity: Date.now(),
+      }),
+      formatFile: async (_fp, _name, content) => {
+        receivedContents.push(content);
+        return null; // no formatting changes
+      },
+      getServerDiagnostics: () => [],
+      diagnosticsTimeoutMs: 50,
+    });
+    const interceptor = createToolResultInterceptor(deps);
+
+    await interceptor({
+      toolName: "write",
+      toolCallId: "tc1",
+      input: { path: filePath },
+      result: "File written",
+    });
+
+    assert.equal(receivedContents.length, 1);
+    assert.equal(receivedContents[0], "version-1",
+      "formatFile should receive the exact content the interceptor read from disk");
+
+    // Write new content, call again
+    fs.writeFileSync(filePath, "version-2");
+    await interceptor({
+      toolName: "write",
+      toolCallId: "tc2",
+      input: { path: filePath },
+      result: "File written again",
+    });
+
+    assert.equal(receivedContents.length, 2);
+    assert.equal(receivedContents[1], "version-2",
+      "formatFile should receive updated content on second call");
+  } finally {
+    cleanup();
+  }
+});
+
+test("stale formatting edits do not corrupt file when content matches", async () => {
+  // Regression test: simulates the scenario where formatFile must use the
+  // same content the LSP server has. If formatFile re-read from disk and
+  // the disk had different content, edits would corrupt the file.
+  const { filePath, cleanup } = createTmpFile();
+
+  try {
+    const originalContent = "/**\n * Hello\n */\nfunction foo() {}\n";
+    fs.writeFileSync(filePath, originalContent);
+
+    const deps = createMockDeps({
+      resolveServerForFile: () => "test-server",
+      ensureServerForFile: async () => ({
+        name: "test-server",
+        client: {
+          notify: () => { },
+          request: async () => null,
+          onDiagnostics: () => { },
+          onNotification: () => { },
+          destroy: () => { },
+        },
+        rootUri: "file:///tmp",
+        lastActivity: Date.now(),
+      }),
+      formatFile: async (_fp, _name, content) => {
+        // Simulate a formatter that adds a trailing newline.
+        // Crucially, the edit is relative to `content` (the parameter),
+        // not whatever might be on disk.
+        if (!content.endsWith("\n\n")) {
+          return content + "\n";
+        }
+        return null;
+      },
+      getServerDiagnostics: () => [],
+      diagnosticsTimeoutMs: 50,
+    });
+    const interceptor = createToolResultInterceptor(deps);
+
+    await interceptor({
+      toolName: "write",
+      toolCallId: "tc1",
+      input: { path: filePath },
+      result: "File written",
+    });
+
+    const result = fs.readFileSync(filePath, "utf-8");
+    // The JSDoc opener must NOT be corrupted
+    assert.ok(result.startsWith("/**"), `File should start with /**, got: ${JSON.stringify(result.slice(0, 10))}`);
+    assert.ok(result.includes("function foo()"), "function declaration must be intact");
+  } finally {
+    cleanup();
+  }
+});
+
+test("content passed to formatFile matches what was sent via didOpen/didChange", async () => {
+  // This is the key invariant that prevents corruption: the content
+  // formatFile operates on must be the same content the LSP server has.
+  const { filePath, cleanup } = createTmpFile();
+  let didOpenText: string | null = null;
+  let formatFileContent: string | null = null;
+
+  try {
+    fs.writeFileSync(filePath, "const a = 1;\n");
+
+    const mockClient = {
+      notify: (method: string, params: unknown) => {
+        if (method === "textDocument/didOpen") {
+          didOpenText = (params as any).textDocument.text;
+        } else if (method === "textDocument/didChange") {
+          didOpenText = (params as any).contentChanges[0].text;
+        }
+      },
+      request: async () => null,
+      onDiagnostics: () => {},
+      onNotification: () => {},
+      destroy: () => {},
+    };
+
+    const deps = createMockDeps({
+      resolveServerForFile: () => "test-server",
+      ensureServerForFile: async () => ({
+        name: "test-server",
+        client: mockClient,
+        rootUri: "file:///tmp",
+        lastActivity: Date.now(),
+      }),
+      formatFile: async (_fp, _name, content) => {
+        formatFileContent = content;
+        return null;
+      },
+      getServerDiagnostics: () => [],
+      diagnosticsTimeoutMs: 50,
+    });
+    const interceptor = createToolResultInterceptor(deps);
+
+    await interceptor({
+      toolName: "write",
+      toolCallId: "tc1",
+      input: { path: filePath },
+      result: "File written",
+    });
+
+    assert.ok(didOpenText !== null, "should have sent content to LSP");
+    assert.ok(formatFileContent !== null, "should have called formatFile");
+    assert.equal(formatFileContent, didOpenText,
+      "formatFile must receive exactly the same content that was sent to the LSP server");
+  } finally {
+    cleanup();
+  }
+});
+
 test("auto code actions not applied when autoCodeActions=false (default)", async () => {
   const { filePath, cleanup } = createTmpFile();
   let codeActionsCalled = false;
@@ -313,16 +536,16 @@ test("auto code actions not applied when autoCodeActions=false (default)", async
       ensureServerForFile: async () => ({
         name: "test-server",
         client: {
-          notify: () => {},
+          notify: () => { },
           request: async (_method: string) => {
             if (_method === "textDocument/codeAction") {
               codeActionsCalled = true;
             }
             return null;
           },
-          onDiagnostics: () => {},
-          onNotification: () => {},
-          destroy: () => {},
+          onDiagnostics: () => { },
+          onNotification: () => { },
+          destroy: () => { },
         },
         rootUri: "file:///tmp",
         lastActivity: Date.now(),
