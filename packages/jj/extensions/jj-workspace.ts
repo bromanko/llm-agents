@@ -169,7 +169,7 @@ function isAncestorOrSame(candidate: string, target: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-export default async function (pi: ExtensionAPI) {
+export default async function(pi: ExtensionAPI) {
   const defaultCwd = process.cwd();
   if (!isJjRepo(defaultCwd)) return;
 
@@ -192,7 +192,7 @@ export default async function (pi: ExtensionAPI) {
     args: string[],
     options?: { cwd?: string; timeout?: number },
   ): Promise<JjResult> {
-    const result = await pi.exec("jj", args, {
+    const result = await pi.exec("jj", ["--color=never", ...args], {
       cwd: options?.cwd ?? defaultCwd,
       timeout: options?.timeout ?? DEFAULT_JJ_TIMEOUT,
     });

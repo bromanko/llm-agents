@@ -170,7 +170,7 @@ test("registration: commands/tools are registered in jj repo", async () => {
   try {
     await withCwd(repoDir, async () => {
       const { captured, pi } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root-change\n");
         }
         return ok();
@@ -189,6 +189,39 @@ test("registration: commands/tools are registered in jj repo", async () => {
       assert.equal(pi.getHandlers("user_bash").length, 1);
       assert.equal(pi.getHandlers("before_agent_start").length, 1);
       assert.equal(pi.getHandlers("session_start").length, 1);
+    });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("runJj always prefixes jj argv with --color=never", async () => {
+  const repoDir = createJjRepoTempDir();
+
+  try {
+    await withCwd(repoDir, async () => {
+      const { captured, execCalls } = await setupExtension(async (_command, args) => {
+        if (args[1] === "workspace" && args[2] === "list") {
+          return ok("default|root-change\n");
+        }
+        return ok();
+      });
+
+      const wsList = captured.commands.get("ws-list")!;
+      await wsList.handler("", createCommandCtx().ctx);
+
+      const listCall = execCalls.find((call) =>
+        call.command === "jj"
+        && call.args[1] === "workspace"
+        && call.args[2] === "list"
+      );
+
+      assert.ok(listCall, "expected jj workspace list call");
+      assert.equal(listCall.args[0], "--color=never");
+      assert.deepEqual(
+        listCall.args.slice(1),
+        ["workspace", "list", "-T", 'name ++ "|" ++ self.target().change_id() ++ "\\n"'],
+      );
     });
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
@@ -221,13 +254,13 @@ test("/ws-create: rejects existing workspace name", async () => {
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nfeature|abc\n");
         }
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
-        if (args[0] === "workspace" && args[1] === "add") {
+        if (args[1] === "workspace" && args[2] === "add") {
           return fail("Error: Workspace feature already exists");
         }
         return ok();
@@ -253,10 +286,10 @@ test("/ws-create: shows error when jj root fails", async () => {
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return fail("unable to determine repo root");
         }
         return ok();
@@ -290,11 +323,11 @@ test("/ws-create: rejects path collision", async () => {
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
@@ -321,13 +354,13 @@ test("/ws-create: shows error when jj workspace add fails", async () => {
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
-        if (args[0] === "workspace" && args[1] === "add") {
+        if (args[1] === "workspace" && args[2] === "add") {
           return fail("unexpected workspace add error");
         }
         return ok();
@@ -360,15 +393,15 @@ test("/ws-create success persists state and enables prompt cwd rewrite", async (
   try {
     await withCwd(repoDir, async () => {
       const { captured, pi } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
-        if (args[0] === "workspace" && args[1] === "add") {
+        if (args[1] === "workspace" && args[2] === "add") {
           return ok();
         }
 
@@ -414,11 +447,11 @@ test("/ws-switch and /ws-default: validates target, persists state, then clears 
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nswitch-target|abc\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[2] === "--name" && args[3] === "switch-target") {
+        if (args[1] === "workspace" && args[2] === "root" && args[3] === "--name" && args[4] === "switch-target") {
           return ok(`${wsPath}\n`);
         }
 
@@ -466,7 +499,7 @@ test("/ws-default: shows message when already in default workspace", async () =>
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
         return ok();
@@ -494,11 +527,11 @@ test("/ws-switch: rejects workspace whose path does not exist on disk", async ()
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\ngone|cid-gone\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "gone") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "gone") {
           return ok(`${wsPath}\n`);
         }
 
@@ -535,15 +568,15 @@ test("/ws-list shows non-default workspaces and active marker", async () => {
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\na|id-a\nb|id-b\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "a") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "a") {
           return ok(`${wsPathA}\n`);
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "b") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "b") {
           return ok(`${wsPathB}\n`);
         }
 
@@ -578,7 +611,7 @@ test("/ws-list: shows message when no non-default workspaces exist", async () =>
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
         return ok();
@@ -604,7 +637,7 @@ test("getArgumentCompletions: filters by prefix and excludes default", async () 
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nfeature-auth|cid-a\nfeature-ui|cid-b\nbugfix|cid-c\n");
         }
         return ok();
@@ -668,7 +701,7 @@ test("/ws-finish: rejects missing target, default target, and missing workspace"
   try {
     await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
         return ok();
@@ -701,11 +734,11 @@ test("/ws-finish: cancellation via confirm dialog prevents any mutation", async 
   try {
     await withCwd(repoDir, async () => {
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\ncancel|cid-cancel\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "cancel") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "cancel") {
           return ok(`${wsPath}\n`);
         }
 
@@ -722,14 +755,14 @@ test("/ws-finish: cancellation via confirm dialog prevents any mutation", async 
 
       const mergeCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "new"
+        && call.args[1] === "new"
       );
       assert.equal(mergeCall, undefined, "no merge should be attempted after cancellation");
 
       const forgetCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "workspace"
-        && call.args[1] === "forget"
+        && call.args[1] === "workspace"
+        && call.args[2] === "forget"
       );
       assert.equal(forgetCall, undefined, "no forget should be attempted after cancellation");
 
@@ -749,27 +782,27 @@ test("/ws-finish: no unique commits forgets and deletes workspace without merge"
   try {
     await withCwd(repoDir, async () => {
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nempty|cid-empty\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "empty") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "empty") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(empty@)")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(empty@)")) {
           return ok("");
         }
 
-        if (args[0] === "workspace" && args[1] === "forget" && args[2] === "empty") {
+        if (args[1] === "workspace" && args[2] === "forget" && args[3] === "empty") {
           return ok();
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "ancestors(@, 4)") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "ancestors(@, 4)") {
           return ok("abc123 finished workspace empty\n");
         }
 
@@ -783,17 +816,17 @@ test("/ws-finish: no unique commits forgets and deletes workspace without merge"
 
       const calledMerge = execCalls.some((call) =>
         call.command === "jj"
-        && call.args[0] === "new"
-        && call.args[1] === "default@"
-        && call.args[2] === "empty@"
+        && call.args[1] === "new"
+        && call.args[2] === "default@"
+        && call.args[3] === "empty@"
       );
       assert.equal(calledMerge, false, "expected no merge command when there are no unique commits");
 
       const calledForget = execCalls.some((call) =>
         call.command === "jj"
-        && call.args[0] === "workspace"
-        && call.args[1] === "forget"
-        && call.args[2] === "empty"
+        && call.args[1] === "workspace"
+        && call.args[2] === "forget"
+        && call.args[3] === "empty"
       );
       assert.equal(calledForget, true);
 
@@ -820,15 +853,15 @@ test("/ws-finish: abandons all-empty commits before proceeding", async () => {
     await withCwd(repoDir, async () => {
       let logQueryCount = 0;
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nall-empty|cid-all-empty\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "all-empty") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "all-empty") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(all-empty@)")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(all-empty@)")) {
           logQueryCount++;
           if (logQueryCount === 1) {
             return ok("change-1|empty work|true|false\nchange-2|also empty|true|false\n");
@@ -836,19 +869,19 @@ test("/ws-finish: abandons all-empty commits before proceeding", async () => {
           return ok("");
         }
 
-        if (args[0] === "abandon") {
+        if (args[1] === "abandon") {
           return ok();
         }
 
-        if (args[0] === "workspace" && args[1] === "forget" && args[2] === "all-empty") {
+        if (args[1] === "workspace" && args[2] === "forget" && args[3] === "all-empty") {
           return ok();
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "ancestors(@, 4)") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "ancestors(@, 4)") {
           return ok("abc123 finished workspace all-empty\n");
         }
 
@@ -861,11 +894,11 @@ test("/ws-finish: abandons all-empty commits before proceeding", async () => {
 
       const abandonCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "abandon"
+        && call.args[1] === "abandon"
       );
       assert.ok(abandonCall, "expected jj abandon to be called for empty commits");
       assert.deepEqual(
-        abandonCall.args.slice(1),
+        abandonCall.args.slice(2),
         ["change-1", "change-2"],
         "abandon should be called with all empty change IDs",
       );
@@ -874,17 +907,17 @@ test("/ws-finish: abandons all-empty commits before proceeding", async () => {
 
       const mergeCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "new"
-        && call.args[1] === "default@"
-        && call.args[2] === "all-empty@"
+        && call.args[1] === "new"
+        && call.args[2] === "default@"
+        && call.args[3] === "all-empty@"
       );
       assert.equal(mergeCall, undefined, "merge should not run when all commits were empty and abandoned");
 
       const forgetCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "workspace"
-        && call.args[1] === "forget"
-        && call.args[2] === "all-empty"
+        && call.args[1] === "workspace"
+        && call.args[2] === "forget"
+        && call.args[3] === "all-empty"
       );
       assert.ok(forgetCall, "workspace forget should still run after abandoning empty commits");
 
@@ -911,17 +944,17 @@ test("/ws-finish: warns when new commits appear during empty-commit cleanup", as
     await withCwd(repoDir, async () => {
       let logQueryCount = 0;
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nrace|cid-race\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "race") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "race") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(race@)")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(race@)")) {
           logQueryCount++;
-          if (String(args[2]).includes("heads(") && String(args[2]).includes("~empty()")) {
+          if (String(args[3]).includes("heads(") && String(args[3]).includes("~empty()")) {
             // heads() query for merge parents (non-empty heads)
             return ok("change-new\n");
           }
@@ -933,35 +966,35 @@ test("/ws-finish: warns when new commits appear during empty-commit cleanup", as
           return ok("change-new|surprise work|false|false\n");
         }
 
-        if (args[0] === "abandon") {
+        if (args[1] === "abandon") {
           return ok();
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "default@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "default@") {
           return ok("true");
         }
 
-        if (args[0] === "op" && args[1] === "log") {
+        if (args[1] === "op" && args[2] === "log") {
           return ok("op-race\n");
         }
 
-        if (args[0] === "new" && args[1] === "default@" && args[2] === "change-new") {
+        if (args[1] === "new" && args[2] === "default@" && args[3] === "change-new") {
           return ok();
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "@") {
           return ok("false|merged-change\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "forget" && args[2] === "race") {
+        if (args[1] === "workspace" && args[2] === "forget" && args[3] === "race") {
           return ok();
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "ancestors(@, 4)") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "ancestors(@, 4)") {
           return ok("xyz finish workspace race\n");
         }
 
@@ -974,10 +1007,10 @@ test("/ws-finish: warns when new commits appear during empty-commit cleanup", as
 
       // Should have abandoned the original empty commit
       const abandonCall = execCalls.find((call) =>
-        call.command === "jj" && call.args[0] === "abandon"
+        call.command === "jj" && call.args[1] === "abandon"
       );
       assert.ok(abandonCall, "expected jj abandon to be called");
-      assert.deepEqual(abandonCall.args.slice(1), ["change-1"]);
+      assert.deepEqual(abandonCall.args.slice(2), ["change-1"]);
 
       // Should have warned about the new commit
       const warning = notifications.find((n) => n.level === "warning" && n.message.includes("new commit"));
@@ -987,9 +1020,9 @@ test("/ws-finish: warns when new commits appear during empty-commit cleanup", as
       // Should still proceed to merge the new commit using its change ID
       const mergeCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "new"
-        && call.args[1] === "default@"
-        && call.args[2] === "change-new"
+        && call.args[1] === "new"
+        && call.args[2] === "default@"
+        && call.args[3] === "change-new"
       );
       assert.ok(mergeCall, "new commits should proceed to merge");
 
@@ -1011,46 +1044,46 @@ test("/ws-finish: merge success path performs merge, forget, delete, and clears 
   try {
     await withCwd(repoDir, async () => {
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nmerge-ok|cid-merge\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "merge-ok") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "merge-ok") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(merge-ok@)")) {
-          if (String(args[2]).includes("heads(") && String(args[2]).includes("~empty()")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(merge-ok@)")) {
+          if (String(args[3]).includes("heads(") && String(args[3]).includes("~empty()")) {
             return ok("change-1\n");
           }
           return ok("change-1|implement feature|false|false\n");
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "default@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "default@") {
           return ok("true");
         }
 
-        if (args[0] === "op" && args[1] === "log") {
+        if (args[1] === "op" && args[2] === "log") {
           return ok("op-123\n");
         }
 
-        if (args[0] === "new" && args[1] === "default@" && args[2] === "change-1") {
+        if (args[1] === "new" && args[2] === "default@" && args[3] === "change-1") {
           return ok();
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "@") {
           return ok("false|new-change\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "forget" && args[2] === "merge-ok") {
+        if (args[1] === "workspace" && args[2] === "forget" && args[3] === "merge-ok") {
           return ok();
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "ancestors(@, 4)") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "ancestors(@, 4)") {
           return ok("xyz890 finish workspace merge-ok\n");
         }
 
@@ -1063,17 +1096,17 @@ test("/ws-finish: merge success path performs merge, forget, delete, and clears 
 
       const mergeCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "new"
-        && call.args[1] === "default@"
-        && call.args[2] === "change-1"
+        && call.args[1] === "new"
+        && call.args[2] === "default@"
+        && call.args[3] === "change-1"
       );
       assert.ok(mergeCall, "expected deterministic merge command to run");
 
       const forgetCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "workspace"
-        && call.args[1] === "forget"
-        && call.args[2] === "merge-ok"
+        && call.args[1] === "workspace"
+        && call.args[2] === "forget"
+        && call.args[3] === "merge-ok"
       );
       assert.ok(forgetCall, "expected workspace forget command");
 
@@ -1099,38 +1132,38 @@ test("/ws-finish: merge conflict restores operation and preserves workspace", as
   try {
     await withCwd(repoDir, async () => {
       const { captured, pi, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nconflict|cid-conflict\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "conflict") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "conflict") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(conflict@)")) {
-          if (String(args[2]).includes("heads(") && String(args[2]).includes("~empty()")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(conflict@)")) {
+          if (String(args[3]).includes("heads(") && String(args[3]).includes("~empty()")) {
             return ok("change-1\n");
           }
           return ok("change-1|conflicting commit|false|false\n");
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "default@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "default@") {
           return ok("true");
         }
 
-        if (args[0] === "op" && args[1] === "log") {
+        if (args[1] === "op" && args[2] === "log") {
           return ok("op-pre-merge\n");
         }
 
-        if (args[0] === "new" && args[1] === "default@" && args[2] === "change-1") {
+        if (args[1] === "new" && args[2] === "default@" && args[3] === "change-1") {
           return ok();
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "@") {
           return ok("true|conflicted\n");
         }
 
-        if (args[0] === "op" && args[1] === "restore" && args[2] === "op-pre-merge") {
+        if (args[1] === "op" && args[2] === "restore" && args[3] === "op-pre-merge") {
           return ok();
         }
 
@@ -1149,16 +1182,16 @@ test("/ws-finish: merge conflict restores operation and preserves workspace", as
 
       const restoreCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "op"
-        && call.args[1] === "restore"
-        && call.args[2] === "op-pre-merge"
+        && call.args[1] === "op"
+        && call.args[2] === "restore"
+        && call.args[3] === "op-pre-merge"
       );
       assert.ok(restoreCall, "expected rollback operation restore to run");
 
       const forgetCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "workspace"
-        && call.args[1] === "forget"
+        && call.args[1] === "workspace"
+        && call.args[2] === "forget"
       );
       assert.equal(forgetCall, undefined, "workspace forget should not run on conflict");
 
@@ -1189,42 +1222,42 @@ test("/ws-finish: reports error when workspace forget fails after merge", async 
   try {
     await withCwd(repoDir, async () => {
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nforget-fail|cid-forget-fail\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "forget-fail") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "forget-fail") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(forget-fail@)")) {
-          if (String(args[2]).includes("heads(") && String(args[2]).includes("~empty()")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(forget-fail@)")) {
+          if (String(args[3]).includes("heads(") && String(args[3]).includes("~empty()")) {
             return ok("change-1\n");
           }
           return ok("change-1|some work|false|false\n");
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "default@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "default@") {
           return ok("true");
         }
 
-        if (args[0] === "op" && args[1] === "log") {
+        if (args[1] === "op" && args[2] === "log") {
           return ok("op-abc\n");
         }
 
-        if (args[0] === "new" && args[1] === "default@" && args[2] === "change-1") {
+        if (args[1] === "new" && args[2] === "default@" && args[3] === "change-1") {
           return ok();
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "@") {
           return ok("false|merged-change\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "forget" && args[2] === "forget-fail") {
+        if (args[1] === "workspace" && args[2] === "forget" && args[3] === "forget-fail") {
           return fail("workspace forget internal error");
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
@@ -1242,9 +1275,9 @@ test("/ws-finish: reports error when workspace forget fails after merge", async 
       // Merge should have been called (it succeeded)
       const mergeCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "new"
-        && call.args[1] === "default@"
-        && call.args[2] === "change-1"
+        && call.args[1] === "new"
+        && call.args[2] === "default@"
+        && call.args[3] === "change-1"
       );
       assert.ok(mergeCall, "merge should have been attempted before forget");
 
@@ -1265,20 +1298,20 @@ test("/ws-finish: blocks merge when default workspace has uncommitted changes", 
   try {
     await withCwd(repoDir, async () => {
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\ndirty-def|cid-dirty-def\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "dirty-def") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "dirty-def") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(dirty-def@)")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(dirty-def@)")) {
           return ok("change-1|real work|false|false\n");
         }
 
         // default@ is NOT empty — has uncommitted changes
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "default@") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "default@") {
           return ok("false");
         }
 
@@ -1295,7 +1328,7 @@ test("/ws-finish: blocks merge when default workspace has uncommitted changes", 
 
       // Should NOT have attempted merge
       const mergeCall = execCalls.find((call) =>
-        call.command === "jj" && call.args[0] === "new"
+        call.command === "jj" && call.args[1] === "new"
       );
       assert.equal(mergeCall, undefined, "merge should not be attempted when default has uncommitted changes");
 
@@ -1316,19 +1349,19 @@ test("/ws-finish: rejects workspace with pre-existing conflicted commits", async
   try {
     await withCwd(repoDir, async () => {
       const { captured, execCalls } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\npre-conflict|cid-pre-conflict\n");
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === "pre-conflict") {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === "pre-conflict") {
           return ok(`${wsPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes("ancestors(pre-conflict@)")) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes("ancestors(pre-conflict@)")) {
           return ok("change-1|conflicting change|false|true\nchange-2|clean change|false|false\n");
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
@@ -1346,16 +1379,16 @@ test("/ws-finish: rejects workspace with pre-existing conflicted commits", async
 
       const mergeCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "new"
-        && call.args[1] === "default@"
-        && call.args[2] === "pre-conflict@"
+        && call.args[1] === "new"
+        && call.args[2] === "default@"
+        && call.args[3] === "pre-conflict@"
       );
       assert.equal(mergeCall, undefined, "merge should not be attempted when workspace has conflicts");
 
       const forgetCall = execCalls.find((call) =>
         call.command === "jj"
-        && call.args[0] === "workspace"
-        && call.args[1] === "forget"
+        && call.args[1] === "workspace"
+        && call.args[2] === "forget"
       );
       assert.equal(forgetCall, undefined, "workspace forget should not run when workspace has conflicts");
 
@@ -1385,27 +1418,27 @@ test("/ws-finish: safeDeleteWorkspaceDir guards prevent deletion of dangerous pa
   ): Promise<{ notifications: NotifyEntry[]; dirSurvived: boolean }> {
     const result = await withCwd(repoDir, async () => {
       const { captured } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok(`default|root\n${wsName}|cid-${wsName}\n`);
         }
 
-        if (args[0] === "workspace" && args[1] === "root" && args[3] === wsName) {
+        if (args[1] === "workspace" && args[2] === "root" && args[4] === wsName) {
           return ok(`${dangerousPath}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && String(args[2]).includes(`ancestors(${wsName}@)`)) {
+        if (args[1] === "log" && args[2] === "-r" && String(args[3]).includes(`ancestors(${wsName}@)`)) {
           return ok("");
         }
 
-        if (args[0] === "workspace" && args[1] === "forget") {
+        if (args[1] === "workspace" && args[2] === "forget") {
           return ok();
         }
 
-        if (args[0] === "root") {
+        if (args[1] === "root") {
           return ok(`${repoDir}\n`);
         }
 
-        if (args[0] === "log" && args[1] === "-r" && args[2] === "ancestors(@, 4)") {
+        if (args[1] === "log" && args[2] === "-r" && args[3] === "ancestors(@, 4)") {
           return ok("");
         }
 
@@ -1465,7 +1498,7 @@ test("session_start: restores valid saved workspace and warns on stale state", a
   try {
     await withCwd(repoDir, async () => {
       const { pi } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\npersist|cid-persist\n");
         }
         return ok();
@@ -1528,7 +1561,7 @@ test("session_start: parseSavedWorkspace edge cases", async () => {
   try {
     await withCwd(repoDir, async () => {
       const { pi } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\nedge|cid-edge\n");
         }
         return ok();
@@ -1678,7 +1711,7 @@ test("before_agent_start and user_bash are no-ops when no workspace is active", 
   try {
     await withCwd(repoDir, async () => {
       const { pi } = await setupExtension(async (_command, args) => {
-        if (args[0] === "workspace" && args[1] === "list") {
+        if (args[1] === "workspace" && args[2] === "list") {
           return ok("default|root\n");
         }
         return ok();
