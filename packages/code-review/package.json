@@ -1,8 +1,11 @@
 {
   "name": "@bromanko/pi-code-review",
   "version": "1.0.0",
+  "type": "module",
   "description": "Interactive code review extension — runs review skills and iterates through findings one by one",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "author": {
     "name": "bromanko",
     "email": "hello@bromanko.com"
