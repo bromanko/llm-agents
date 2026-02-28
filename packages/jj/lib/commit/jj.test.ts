@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseHunks, JjError } from "./jj.ts";
+import { parseHunks, JjError, runJj } from "./jj.ts";
 
 // ---------------------------------------------------------------------------
 // parseHunks — pure function, no jj binary needed
@@ -72,6 +72,42 @@ test("JjError: has command and stderr properties", () => {
   assert.ok(err.message.includes("jj diff --git"));
   assert.ok(err.message.includes("fatal: not a jj repo"));
   assert.equal(err.name, "JjError");
+});
+
+test("runJj: calls execFile with jj and prepends --color=never while preserving arg order", async () => {
+  let capturedFile = "";
+  let capturedArgs: string[] = [];
+  let capturedCwd = "";
+
+  const mockExecFile = ((file, args, options, callback) => {
+    capturedFile = file;
+    capturedArgs = [...args];
+    capturedCwd = options.cwd;
+    callback(null, "stdout text", "stderr text");
+  }) as Parameters<typeof runJj>[2];
+
+  const result = await runJj("/tmp/repo", ["log", "-r", "@", "--no-graph"], mockExecFile);
+
+  assert.equal(capturedFile, "jj");
+  assert.deepEqual(capturedArgs, ["--color=never", "log", "-r", "@", "--no-graph"]);
+  assert.equal(capturedCwd, "/tmp/repo");
+  assert.deepEqual(result, { stdout: "stdout text", stderr: "stderr text" });
+});
+
+test("runJj: keeps existing error-path behavior", async () => {
+  const mockExecFile = ((_, __, ___, callback) => {
+    callback(new Error("spawn failed"), "", "jj stderr");
+  }) as Parameters<typeof runJj>[2];
+
+  await assert.rejects(
+    () => runJj("/tmp/repo", ["diff", "--git"], mockExecFile),
+    (error: unknown) => {
+      assert.ok(error instanceof JjError);
+      assert.equal(error.command, "jj diff --git");
+      assert.equal(error.stderr, "jj stderr");
+      return true;
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

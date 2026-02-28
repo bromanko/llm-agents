@@ -31,11 +31,17 @@ interface ExecResult {
   stderr: string;
 }
 
-function runJj(cwd: string, args: string[]): Promise<ExecResult> {
+type ExecFileLike = typeof execFile;
+
+export function runJj(
+  cwd: string,
+  args: string[],
+  execFileImpl: ExecFileLike = execFile,
+): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    execFile(
+    execFileImpl(
       "jj",
-      args,
+      ["--color=never", ...args],
       { cwd, encoding: "utf-8", timeout: 30_000 },
       (error, stdout, stderr) => {
         if (error) {
