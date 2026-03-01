@@ -7,7 +7,7 @@ import {
   runModelInference,
   setCompleteFn,
   setCompleteFnImporter,
-} from "../../packages/jj/extensions/jj-commit.ts";
+} from "../../pi/jj/extensions/jj-commit.ts";
 
 const model = {
   provider: "anthropic",

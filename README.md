@@ -109,6 +109,42 @@ Elm-specific code review skills for quality, security, performance, and testing.
 /plugin install elm-review@bromanko-llm-agents
 ```
 
+---
+
+## Pi `/review` command
+
+The repository includes an interactive code review command in `packages/code-review/extensions/index.ts`.
+
+### Usage
+
+```shell
+/review <language> [types...] [-r|--revisions <range>] [--fix <high|medium|low|all>]
+```
+
+- `language` selects the review skill family (`gleam`, `fsharp`, `elm`, etc.).
+- `types` optionally narrows to `code`, `security`, `performance`, and/or `test`.
+- `-r/--revisions` selects what changes to review. Default is `@`.
+- `--fix` auto-queues follow-up fix requests at or above the given severity threshold.
+
+### Examples
+
+```shell
+/review gleam
+/review gleam -r main..@
+/review gleam code security -r abc123
+/review gleam -r @ --fix high
+/review fsharp test -r main..@ --fix medium
+```
+
+### Range resolution
+
+`/review` gathers code changes by trying:
+
+1. `jj diff -r <range> --git`
+2. `git` fallback (`git diff` for ranges, `git show --patch` for single revisions)
+
+If both fail, the command reports a deterministic error including the range and failing commands.
+
 ## Using plugins
 
 After installing a plugin:

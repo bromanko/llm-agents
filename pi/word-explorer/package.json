@@ -1,0 +1,13 @@
+{
+  "name": "@bromanko/pi-word-explorer",
+  "version": "1.0.0",
+  "description": "Comprehensive word exploration with dictionary definitions, etymology, and literary examples",
+  "keywords": ["pi-package"],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "skills": ["../../skills/word-explorer"]
+  }
+}

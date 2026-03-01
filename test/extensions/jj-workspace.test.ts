@@ -6,7 +6,7 @@ import * as path from "node:path";
 
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
 
-import jjWorkspaceExtension from "../../packages/jj/extensions/jj-workspace.ts";
+import jjWorkspaceExtension from "../../pi/jj/extensions/jj-workspace.ts";
 import {
   createMockExtensionAPI,
   type ExecResult,
