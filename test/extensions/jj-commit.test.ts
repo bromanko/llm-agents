@@ -25,39 +25,39 @@ test("parseArgs: handles malformed and unknown flags", () => {
     input: string;
     expected: Record<string, unknown>;
   }> = [
-    {
-      name: "unknown flags are ignored",
-      input: "--unknown --dry-run --weird",
-      expected: { dryRun: true, push: false, noChangelog: false, noAbsorb: false },
-    },
-    {
-      name: "bookmark missing value does not consume following flag",
-      input: "--bookmark --push",
-      expected: { dryRun: false, push: true, noChangelog: false, noAbsorb: false },
-    },
-    {
-      name: "bookmark value is parsed when provided",
-      input: "--push --bookmark feature/abc",
-      expected: {
-        dryRun: false,
-        push: true,
-        bookmark: "feature/abc",
-        noChangelog: false,
-        noAbsorb: false,
+      {
+        name: "unknown flags are ignored",
+        input: "--unknown --dry-run --weird",
+        expected: { dryRun: true, push: false, noChangelog: false, noAbsorb: false },
       },
-    },
-    {
-      name: "context consumes the remainder exactly",
-      input: "--dry-run --context keep   spacing --bookmark main",
-      expected: {
-        dryRun: true,
-        push: false,
-        noChangelog: false,
-        noAbsorb: false,
-        context: "keep   spacing --bookmark main",
+      {
+        name: "bookmark missing value does not consume following flag",
+        input: "--bookmark --push",
+        expected: { dryRun: false, push: true, noChangelog: false, noAbsorb: false },
       },
-    },
-  ];
+      {
+        name: "bookmark value is parsed when provided",
+        input: "--push --bookmark feature/abc",
+        expected: {
+          dryRun: false,
+          push: true,
+          bookmark: "feature/abc",
+          noChangelog: false,
+          noAbsorb: false,
+        },
+      },
+      {
+        name: "context consumes the remainder exactly",
+        input: "--dry-run --context keep   spacing --bookmark main",
+        expected: {
+          dryRun: true,
+          push: false,
+          noChangelog: false,
+          noAbsorb: false,
+          context: "keep   spacing --bookmark main",
+        },
+      },
+    ];
 
   for (const tc of cases) {
     const actual = parseArgs(tc.input);
@@ -193,7 +193,7 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
   registerJjCommitCommand(pi, {
     isJjRepo: () => true,
     ControlledJj: class {
-      constructor(_cwd: string) {}
+      constructor(_cwd: string) { }
     } as any,
     runCommitPipeline: async (pipelineCtx: any) => {
       assert.deepStrictEqual(pipelineCtx.availableModels, [sonnetModel, otherModel]);
@@ -217,7 +217,7 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
 
   await registrations[0].command.handler("", {
     cwd: "/tmp/repo",
-    ui: { notify: () => {} },
+    ui: { notify: () => { } },
     modelRegistry: {
       getAll: () => {
         getAllCalls += 1;
@@ -240,6 +240,64 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
   ]);
 });
 
+test("jj-commit handler: OAuth session model is considered available without an API key", async () => {
+  // Reproduces the pi-sub-bar case: getApiKey() always returns "" for OAuth-
+  // authenticated models, but the session model is provably in use and should
+  // be treated as available without a key check.
+  const registrations: Array<{ name: string; command: any }> = [];
+
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  const sessionModel = {
+    provider: "google",
+    id: "claude-sonnet-4-6-20260301",
+    name: "Claude Sonnet 4.6 (via OAuth)",
+  };
+
+  const allModels = [sessionModel];
+  const apiKeyCalls: Array<{ provider: string; id: string }> = [];
+
+  let resolvedModel: any;
+  registerJjCommitCommand(pi, {
+    isJjRepo: () => true,
+    ControlledJj: class {
+      constructor(_cwd: string) { }
+    } as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      // Session model should be available despite getApiKey returning ""
+      assert.equal(await pipelineCtx.hasApiKey(sessionModel), true);
+      resolvedModel = pipelineCtx.sessionModel;
+      return { committed: false, summary: "Nothing to commit.", warnings: [], messages: [] };
+    },
+    pushWithBookmark: async () => ({ success: true }),
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: {
+      getAll: () => allModels,
+      getAvailable: () => allModels,
+      find: (provider: string, id: string) =>
+        allModels.find((m: any) => m.provider === provider && m.id === id),
+      getApiKey: async (model: { provider: string; id: string }) => {
+        // OAuth models return empty — no traditional API key
+        apiKeyCalls.push({ provider: model.provider, id: model.id });
+        return "";
+      },
+    },
+    model: sessionModel,
+  });
+
+  // getApiKey should never have been called for the session model
+  assert.equal(apiKeyCalls.length, 0);
+  assert.deepStrictEqual(resolvedModel, sessionModel);
+});
+
 test("jj-commit handler: does not show recovery guidance for no-op outcomes", async () => {
   const registrations: Array<{ name: string; command: any }> = [];
 
@@ -252,7 +310,7 @@ test("jj-commit handler: does not show recovery guidance for no-op outcomes", as
   registerJjCommitCommand(pi, {
     isJjRepo: () => true,
     ControlledJj: class {
-      constructor(_cwd: string) {}
+      constructor(_cwd: string) { }
     } as any,
     runCommitPipeline: async () => ({
       committed: false,
