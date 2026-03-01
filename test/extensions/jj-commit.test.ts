@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseArgs, registerJjCommitCommand } from "../../packages/jj/extensions/jj-commit.ts";
+import { parseArgs, registerJjCommitCommand } from "../../pi/jj/extensions/jj-commit.ts";
 
 test("registerJjCommitCommand: registers jj-commit entrypoint", () => {
   const registrations: Array<{ name: string; command: any }> = [];

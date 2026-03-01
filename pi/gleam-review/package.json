@@ -1,0 +1,19 @@
+{
+  "name": "@bromanko/pi-gleam-review",
+  "version": "1.0.0",
+  "description": "Gleam-specific code review skills for quality, security, performance, and testing",
+  "keywords": ["pi-package"],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "skills": [
+      "../../skills/gleam-review",
+      "../../skills/gleam-code-review",
+      "../../skills/gleam-security-review",
+      "../../skills/gleam-performance-review",
+      "../../skills/gleam-test-review"
+    ]
+  }
+}

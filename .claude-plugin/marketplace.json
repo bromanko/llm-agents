@@ -9,13 +9,33 @@
     "version": "1.0.0"
   },
   "plugins": [
-    { "name": "jj", "source": "./plugins/jj" },
-    { "name": "word-explorer", "source": "./plugins/word-explorer" },
-    { "name": "fp-ts", "source": "./plugins/fp-ts" },
-    { "name": "gleam-review", "source": "./plugins/gleam-review" },
-    { "name": "fsharp-review", "source": "./plugins/fsharp-review" },
-    { "name": "elm-review", "source": "./plugins/elm-review" },
-    { "name": "tmux-titles", "source": "./plugins/tmux-titles" },
-    { "name": "ears-requirements", "source": "./plugins/ears-requirements" }
+    {
+      "name": "jj",
+      "source": "./claude/plugins/jj"
+    },
+    {
+      "name": "word-explorer",
+      "source": "./claude/plugins/word-explorer"
+    },
+    {
+      "name": "fp-ts",
+      "source": "./claude/plugins/fp-ts"
+    },
+    {
+      "name": "gleam-review",
+      "source": "./claude/plugins/gleam-review"
+    },
+    {
+      "name": "fsharp-review",
+      "source": "./claude/plugins/fsharp-review"
+    },
+    {
+      "name": "elm-review",
+      "source": "./claude/plugins/elm-review"
+    },
+    {
+      "name": "ears-requirements",
+      "source": "./claude/plugins/ears-requirements"
+    }
   ]
 }

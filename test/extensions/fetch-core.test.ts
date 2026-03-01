@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 
-import { cleanupTempFiles, fetchUrl, normalizeUrl } from "../../shared/lib/fetch-core.ts";
+import { cleanupTempFiles, fetchUrl, normalizeUrl } from "../../pi/web/lib/fetch-core.ts";
 
 after(() => cleanupTempFiles());
 

@@ -1,0 +1,19 @@
+{
+  "name": "@bromanko/pi-elm-review",
+  "version": "1.0.0",
+  "description": "Elm-specific code review skills for quality, security, performance, and testing",
+  "keywords": ["pi-package"],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "skills": [
+      "../../skills/elm-review",
+      "../../skills/elm-code-review",
+      "../../skills/elm-security-review",
+      "../../skills/elm-performance-review",
+      "../../skills/elm-test-review"
+    ]
+  }
+}

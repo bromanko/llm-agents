@@ -3,7 +3,7 @@
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
-        "pathMatcher": ".claude-plugin/marketplace.json|plugins/.*/plugin.json",
+        "pathMatcher": ".claude-plugin/marketplace.json|claude/plugins/.*/plugin.json",
         "hooks": [
           {
             "type": "command",

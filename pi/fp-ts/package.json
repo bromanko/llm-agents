@@ -1,0 +1,13 @@
+{
+  "name": "@bromanko/pi-fp-ts",
+  "version": "1.0.0",
+  "description": "Master typed functional programming in TypeScript with fp-ts library guidance",
+  "keywords": ["pi-package"],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "skills": ["../../skills/fp-ts"]
+  }
+}

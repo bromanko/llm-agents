@@ -1,0 +1,18 @@
+{
+  "name": "@bromanko/pi-web",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "HTTP fetch and web search tools for pi",
+  "keywords": [
+    "pi-package"
+  ],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}

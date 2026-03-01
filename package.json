@@ -1,8 +1,11 @@
 {
   "name": "@bromanko/llm-agents",
   "version": "1.0.0",
+  "type": "module",
   "description": "Pi extensions, skills, and tools",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "author": {
     "name": "bromanko",
     "email": "hello@bromanko.com"
@@ -12,17 +15,19 @@
   },
   "pi": {
     "extensions": [
-      "./packages/jj/extensions",
-      "./packages/tmux-titles/extensions",
-      "./packages/code-review/extensions",
-      "./packages/lsp/extensions",
-      "./shared/extensions"
+      "./pi/ci-guard/extensions",
+      "./pi/code-review/extensions",
+      "./pi/jj/extensions",
+      "./pi/live-edit/extensions",
+      "./pi/lsp/extensions",
+      "./pi/tmux-titles/extensions",
+      "./pi/web/extensions"
     ],
     "skills": [
-      "./shared/skills"
+      "./skills"
     ],
     "themes": [
-      "./shared/themes"
+      "./pi/themes"
     ]
   }
 }

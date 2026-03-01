@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import fetchExtension, { createFetchToolDefinition, formatFetchEnvelope } from "../../shared/extensions/fetch.ts";
-import type { FetchResponse } from "../../shared/lib/fetch-core.ts";
+import fetchExtension, { createFetchToolDefinition, formatFetchEnvelope } from "../../pi/web/extensions/fetch.ts";
+import type { FetchResponse } from "../../pi/web/lib/fetch-core.ts";
 
 interface RegisteredTool {
   name: string;

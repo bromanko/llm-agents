@@ -1,1 +1,1 @@
-export { default } from "../../shared/extensions/ci-guard.ts";
+export { default } from "../../pi/ci-guard/extensions/ci-guard.ts";
