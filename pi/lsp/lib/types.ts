@@ -5,18 +5,23 @@
  * and tool parameter shapes used throughout the extension.
  */
 
+/** Canonical actions supported by the unified `lsp` tool. */
+export const LSP_ACTIONS = [
+  "languages",
+  "diagnostics",
+  "definition",
+  "implementation",
+  "references",
+  "hover",
+  "symbols",
+  "rename",
+  "code_actions",
+  "incoming_calls",
+  "outgoing_calls",
+] as const;
+
 /** Actions supported by the unified `lsp` tool. */
-export type LspAction =
-  | "languages"
-  | "diagnostics"
-  | "definition"
-  | "references"
-  | "hover"
-  | "symbols"
-  | "rename"
-  | "code_actions"
-  | "incoming_calls"
-  | "outgoing_calls";
+export type LspAction = (typeof LSP_ACTIONS)[number];
 
 /**
  * Definition of a single LSP server in the defaults or config files.
