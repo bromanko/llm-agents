@@ -525,10 +525,23 @@ function sanitizeScope(value: unknown): string | null {
   return normalized;
 }
 
+function truncateToWordBoundary(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  // Find the last space at or before maxLen
+  const lastSpace = text.lastIndexOf(" ", maxLen);
+  if (lastSpace > 0) {
+    return text.slice(0, lastSpace);
+  }
+  // No space found — hard truncate
+  return text.slice(0, maxLen);
+}
+
 function sanitizeSummary(value: unknown): string {
   if (typeof value !== "string") return "updated files";
   const normalized = value.trim();
-  return normalized.length > 0 ? normalized : "updated files";
+  if (normalized.length === 0) return "updated files";
+  // Truncate at word boundary to fit within the validation limit (72 chars)
+  return truncateToWordBoundary(normalized, 72);
 }
 
 function sanitizeDetails(value: unknown): Array<{ text: string; userVisible: boolean }> {
