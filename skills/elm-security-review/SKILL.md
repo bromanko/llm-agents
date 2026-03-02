@@ -13,6 +13,11 @@ description: This skill should be used when the user asks for "security review",
 
 Perform a comprehensive security audit of Elm code, examining port boundaries, JSON decoder validation, HTML injection prevention, and potential vulnerabilities at the JavaScript interop layer.
 
+**Before starting the review, read the shared security review guidelines** at
+[`../security-review-base/guidelines.md`](../security-review-base/guidelines.md)
+for false-positive filtering rules, confidence scoring, and output format
+requirements. Apply those rules throughout this review.
+
 ## Scope Determination
 
 First, determine what code to review:
@@ -25,11 +30,34 @@ First, determine what code to review:
 
 ## Review Process
 
-1. **Map the attack surface**: Identify ports, flags, HTTP endpoints, user input fields
-2. **Trace data flow**: Follow untrusted input from ports/HTTP through the codebase
-3. **Check each security domain** below
-4. **Review dependencies**: Check `elm.json` for package concerns
-5. **Output findings** in the standard format
+1. **Understand existing security posture**: Identify security patterns,
+   validation libraries, and established conventions already in the codebase
+   before reviewing changes. Look for how the project currently handles port
+   validation, decoder patterns, and HTML rendering.
+2. **Map the attack surface**: Identify ports, flags, HTTP endpoints, user input
+   fields
+3. **Trace data flow**: Follow untrusted input from ports/HTTP through the
+   codebase
+4. **Check each security domain** below
+5. **Review dependencies**: Check `elm.json` for package concerns
+6. **Apply false-positive filtering** from the shared guidelines and the
+   Elm-specific rules below
+7. **Output findings** in the format specified by the shared guidelines
+
+## Elm-Specific False-Positive Rules
+
+In addition to the shared guidelines:
+
+- Elm's virtual DOM prevents most XSS by default — **only flag XSS if using
+  `Html.Attributes.property` with raw JSON, `Html.node` with unsanitized
+  dynamic tag names, or injecting raw HTML via ports**
+- Elm's type system prevents most injection attacks at compile time — focus on
+  boundaries where data enters or leaves the Elm runtime (ports, HTTP, flags)
+- Client-side Elm code does not need server-side auth checks — only flag auth
+  issues at actual trust boundaries
+- Missing length validation on decoder string fields is not a vulnerability
+  unless it leads to a concrete exploit (e.g., buffer overflow in a downstream
+  system via ports)
 
 ## Security Checklist
 
@@ -43,8 +71,6 @@ First, determine what code to review:
 
 ### JSON Decoder Validation
 - Decoders enforce expected data shapes at the boundary
-- String fields checked for length limits where appropriate
-- Numeric fields bounded where appropriate
 - `Decode.oneOf` fallbacks don't silently accept invalid data
 - No `Decode.value` passed through without validation
 - Decoder errors logged or displayed meaningfully (not silently swallowed)
@@ -89,7 +115,6 @@ First, determine what code to review:
   - Any packages that use ports in unexpected ways?
 
 ### Client-Side State
-- Model doesn't accumulate unbounded data (potential memory exhaustion)
 - Authentication state properly cleared on logout
 - Session timeout handled client-side
 - Sensitive form data cleared after submission
@@ -100,37 +125,3 @@ First, determine what code to review:
 - User-provided URLs sanitized before use in `src` / `href`
 - SVG content from user input sanitized (SVG can contain scripts via ports)
 - File uploads (via ports) validated on both client and server side
-
-## Output Format
-
-Present findings as:
-
-```markdown
-## Findings
-
-### [SEVERITY] Issue Title
-**File:** `path/to/Module.elm:LINE`
-**Category:** security
-
-**Issue:** Description of the vulnerability and potential impact.
-
-**Suggestion:** How to remediate, with code example if helpful.
-
-**Effort:** trivial|small|medium|large
-
----
-```
-
-Use severity indicators:
-- HIGH: Exploitable vulnerabilities, data exposure, XSS vectors
-- MEDIUM: Defense-in-depth issues, missing validation, weak patterns
-- LOW: Hardening opportunities, best practice deviations
-
-## Summary
-
-After all findings, provide:
-- Total count by severity
-- Critical items requiring immediate attention
-- Attack surface summary (ports, HTTP endpoints, user inputs identified)
-- Dependency risk assessment
-- Overall security posture (1-2 sentences)
