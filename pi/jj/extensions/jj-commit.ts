@@ -22,6 +22,28 @@ import { runCommitPipeline, pushWithBookmark } from "../lib/commit/pipeline.ts";
 import type { PipelineContext } from "../lib/commit/pipeline.ts";
 import type { CommitCommandArgs } from "../lib/commit/types.ts";
 import type { ModelCandidate } from "../lib/commit/model-resolver.ts";
+import type { InferenceContext } from "../lib/commit/inference.ts";
+import {
+  buildCommitPrompt,
+  parseModelResponse,
+  runModelInference,
+} from "../lib/commit/inference.ts";
+
+// Re-export inference API for tests and external consumers
+export {
+  buildCommitPrompt,
+  parseModelResponse,
+  runModelInference,
+  setCompleteFn,
+  setCompleteFnImporter,
+} from "../lib/commit/inference.ts";
+export type {
+  CompleteFn,
+  CompleteFnImporter,
+  CompletionBlock,
+  CompleteInput,
+  CompleteOptions,
+} from "../lib/commit/inference.ts";
 
 interface JjCommitCommandDeps {
   isJjRepo: (cwd: string) => boolean;
@@ -117,10 +139,8 @@ export function createJjCommitHandler(
           return true;
         }
 
-        // Try the fast-path map first (built from getAvailable), then fall
-        // back to a full registry lookup.  getAvailable() is a fast check
-        // that skips OAuth token refresh, so models authenticated via OAuth
-        // (e.g. pi-sub-bar) may not appear there.
+        // Try the fast-path map first (built from getAll), then fall back to
+        // a full registry lookup.
         const found =
           registryModelByKey.get(key) ??
           ctx.modelRegistry.find(model.provider, model.id);
@@ -151,12 +171,7 @@ export function createJjCommitHandler(
       sessionModel,
       hasApiKey,
       onProgress,
-      // Agentic session is wired through pi's sendUserMessage for now.
-      // For a full agentic session, we would need to create a sub-agent
-      // session with custom tools. For the initial release, we use the
-      // deterministic fallback + the model's inline analysis via a
-      // steering message approach.
-      runAgenticSession: createAgenticSession(pi, ctx),
+      runAgenticSession: createAgenticSession(ctx),
     };
 
     // Run the pipeline
@@ -288,27 +303,16 @@ export function parseArgs(argsStr: string): CommitCommandArgs {
 
 // ---------------------------------------------------------------------------
 // Agentic session factory
-//
-// Creates an agentic session runner that uses pi's model infrastructure.
-// For the initial release, this sends a structured prompt to the model
-// and parses the response into a commit proposal.
 // ---------------------------------------------------------------------------
 
 function createAgenticSession(
-  pi: ExtensionAPI,
-  ctx: any,
+  ctx: InferenceContext,
 ): PipelineContext["runAgenticSession"] {
   return async (input) => {
-    // For now, we use a simplified approach: construct a prompt with the
-    // diff and stat information, send it to the model, and parse the response.
-    // A full agentic loop with custom tools would be a future enhancement.
-
     const prompt = buildCommitPrompt(input);
 
     try {
-      // Use pi.exec to call the model via a simple inference approach
-      // We'll use the session's model to generate a commit message
-      const result = await runModelInference(pi, ctx, input.model, prompt);
+      const result = await runModelInference(ctx, input.model, prompt);
       if (result) {
         return parseModelResponse(result, input.changedFiles);
       }
@@ -318,476 +322,4 @@ function createAgenticSession(
 
     return {};
   };
-}
-
-export function buildCommitPrompt(input: {
-  changedFiles: string[];
-  diff: string;
-  stat: string;
-  changelogTargets: string[];
-  userContext?: string;
-}): string {
-  const parts = [
-    "You are a conventional commit expert. Analyze these jujutsu working copy changes and respond with a JSON commit proposal.",
-    "",
-    "## Changed Files",
-    input.changedFiles.join("\n"),
-    "",
-    "## Diff Stat",
-    input.stat,
-    "",
-    "## Diff",
-    input.diff.slice(0, 50_000), // Truncate large diffs
-    "",
-  ];
-
-  if (input.userContext) {
-    parts.push("## User Context", input.userContext, "");
-  }
-
-  if (input.changelogTargets.length > 0) {
-    parts.push(
-      "## Changelog Targets",
-      input.changelogTargets.join("\n"),
-      "",
-    );
-  }
-
-  parts.push(
-    "## Instructions",
-    "Respond with ONLY a JSON object (no markdown fences, no explanation) in one of these formats:",
-    "",
-    'For a single commit: {"type":"single","commit":{"type":"<commit_type>","scope":"<scope_or_null>","summary":"<past_tense_summary_max_72_chars>","details":[{"text":"<detail>","userVisible":false}]}}',
-    "",
-    'For split commits: {"type":"split","commits":[{"files":["<file>"],"type":"<commit_type>","scope":"<scope_or_null>","summary":"<past_tense_summary>","details":[],"dependencies":[]}],"mode":"file"}',
-    "",
-    "Rules:",
-    "- Summary MUST start with a past-tense verb (added, fixed, refactored, etc.)",
-    "- Summary max 72 characters, no trailing period",
-    "- Scope: lowercase, letters/digits/hyphens/underscores only",
-    "- For split commits: every changed file must appear exactly once across all commits",
-    "- commit_type is one of: feat, fix, refactor, perf, docs, test, build, ci, chore, style, revert",
-  );
-
-  return parts.join("\n");
-}
-
-/**
- * Injectable completion function. In production this is `completeSimple`
- * from `@mariozechner/pi-ai`; tests supply a mock.
- */
-export type CompletionBlock =
-  | { type: "text"; text?: string }
-  | { type: string;[key: string]: unknown };
-
-export type CompleteInput = {
-  messages: Array<{
-    role: "user" | "assistant" | "system";
-    content: Array<{ type: "text"; text: string }>;
-    timestamp?: number;
-  }>;
-};
-
-export type CompleteOptions = {
-  apiKey?: string;
-  maxTokens?: number;
-  temperature?: number;
-};
-
-export type CompleteFn = (
-  model: unknown,
-  context: CompleteInput,
-  options?: CompleteOptions,
-) => Promise<{ content: CompletionBlock[] }>;
-
-export type CompleteFnImporter = () => Promise<CompleteFn>;
-
-interface ModelRegistryForInference {
-  find: (provider: string, id: string) => unknown;
-  getApiKey: (model: unknown) => Promise<string | null | undefined>;
-}
-
-interface InferenceLogger {
-  debug?: (message: string, meta?: unknown) => void;
-}
-
-interface InferenceContext {
-  modelRegistry?: ModelRegistryForInference;
-  logger?: InferenceLogger;
-  model?: {
-    provider?: string;
-    id?: string;
-    [key: string]: unknown;
-  };
-}
-
-let _completeFn: CompleteFn | undefined;
-let _completeFnImporter: CompleteFnImporter | undefined;
-
-/** Override the completion function (for tests). */
-export function setCompleteFn(fn: CompleteFn | undefined): void {
-  _completeFn = fn;
-}
-
-/** Override completion function importer (for tests). */
-export function setCompleteFnImporter(importer: CompleteFnImporter | undefined): void {
-  _completeFnImporter = importer;
-}
-
-async function loadCompleteFn(): Promise<CompleteFn> {
-  if (_completeFnImporter) {
-    return _completeFnImporter();
-  }
-  const { completeSimple } = await import("@mariozechner/pi-ai");
-  return completeSimple as CompleteFn;
-}
-
-async function getCompleteFn(): Promise<CompleteFn> {
-  if (_completeFn) return _completeFn;
-  _completeFn = await loadCompleteFn();
-  return _completeFn;
-}
-
-export async function runModelInference(
-  _pi: ExtensionAPI,
-  ctx: InferenceContext,
-  model: ModelCandidate,
-  prompt: string,
-): Promise<string | null> {
-  try {
-    const registryModel = ctx.modelRegistry?.find(model.provider, model.id);
-    const sessionModel =
-      ctx.model
-        && ctx.model.provider === model.provider
-        && ctx.model.id === model.id
-        ? ctx.model
-        : undefined;
-
-    // Some providers expose a session model that may not appear in the model
-    // registry lookup (e.g. OAuth-backed session adapters). Use that active
-    // model object as a fallback so we still attempt inference before giving up.
-    const resolvedModel = registryModel ?? sessionModel;
-    if (!resolvedModel) return null;
-
-    // Resolve API key when we have a registry model — may be undefined for
-    // OAuth-authenticated models, in which case completeSimple will use the
-    // provider's own auth/session path.
-    let apiKey: string | undefined;
-    if (registryModel && ctx.modelRegistry) {
-      const resolvedApiKey = await ctx.modelRegistry.getApiKey(registryModel);
-      if (typeof resolvedApiKey === "string" && resolvedApiKey.trim().length > 0) {
-        apiKey = resolvedApiKey;
-      }
-    }
-
-    // Use the pi-ai completeSimple API which properly dispatches through
-    // the registered API provider for the model's api type.
-    const complete = await getCompleteFn();
-    const response = await complete(resolvedModel, {
-      messages: [
-        { role: "user", content: [{ type: "text", text: prompt }] },
-      ],
-    }, {
-      apiKey,
-      maxTokens: 2048,
-      temperature: 0.2,
-    });
-
-    // Extract the first text block from the assistant message
-    if (Array.isArray(response?.content)) {
-      for (const block of response.content) {
-        if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-          return block.text;
-        }
-      }
-    }
-  } catch (err) {
-    ctx?.logger?.debug?.("runModelInference failed", {
-      err,
-      provider: model.provider,
-      modelId: model.id,
-    });
-    // Fall through to null — caller uses deterministic fallback
-  }
-
-  return null;
-}
-
-const VALID_COMMIT_TYPES = new Set([
-  "feat",
-  "fix",
-  "refactor",
-  "perf",
-  "docs",
-  "test",
-  "build",
-  "ci",
-  "chore",
-  "style",
-  "revert",
-]);
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === "object" && value !== null;
-}
-
-function sanitizeType(value: unknown): import("../lib/commit/types.ts").CommitType {
-  if (typeof value === "string" && VALID_COMMIT_TYPES.has(value)) {
-    return value as import("../lib/commit/types.ts").CommitType;
-  }
-  return "chore";
-}
-
-function sanitizeScope(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  if (!normalized) return null;
-  if (!/^[a-z0-9][a-z0-9_-]*(\/?[a-z0-9][a-z0-9_-]*)?$/.test(normalized)) {
-    return null;
-  }
-  return normalized;
-}
-
-function sanitizeSummary(value: unknown): string {
-  if (typeof value !== "string") return "updated files";
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : "updated files";
-}
-
-function sanitizeDetails(value: unknown): Array<{ text: string; userVisible: boolean }> {
-  if (!Array.isArray(value)) return [];
-  const details: Array<{ text: string; userVisible: boolean }> = [];
-
-  for (const item of value) {
-    if (typeof item === "string") {
-      const text = item.trim();
-      if (text.length > 0) {
-        details.push({ text, userVisible: false });
-      }
-      continue;
-    }
-
-    if (!isRecord(item)) continue;
-
-    const text = typeof item.text === "string" ? item.text.trim() : "";
-    if (!text) continue;
-    details.push({ text, userVisible: item.userVisible === true });
-  }
-
-  return details;
-}
-
-function sanitizeFiles(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const files: string[] = [];
-  const seen = new Set<string>();
-
-  for (const file of value) {
-    if (typeof file !== "string") continue;
-    const normalized = file.trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    files.push(normalized);
-  }
-
-  return files;
-}
-
-function sanitizeDependencies(value: unknown, maxIndex: number): number[] {
-  if (!Array.isArray(value)) return [];
-  const deps: number[] = [];
-  const seen = new Set<number>();
-
-  for (const dep of value) {
-    if (!Number.isInteger(dep)) continue;
-    const n = dep as number;
-    if (n < 0 || n >= maxIndex || seen.has(n)) continue;
-    seen.add(n);
-    deps.push(n);
-  }
-
-  return deps;
-}
-
-function extractJsonObjectCandidates(text: string): string[] {
-  const candidates: string[] = [];
-  const seen = new Set<string>();
-
-  const pushCandidate = (raw: string) => {
-    const candidate = raw.trim();
-    if (!candidate || seen.has(candidate)) return;
-    seen.add(candidate);
-    candidates.push(candidate);
-  };
-
-  // 1) Whole response (best case: model returned plain JSON)
-  pushCandidate(text);
-
-  // 2) JSON fenced code blocks anywhere in the response
-  const fencedBlockRe = /```(?:json|JSON)?\s*([\s\S]*?)```/g;
-  let fencedMatch: RegExpExecArray | null = fencedBlockRe.exec(text);
-  while (fencedMatch) {
-    pushCandidate(fencedMatch[1]);
-    fencedMatch = fencedBlockRe.exec(text);
-  }
-
-  // 3) Any balanced top-level JSON object embedded in prose
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === "\\") {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (ch === "{") {
-      if (depth === 0) {
-        start = i;
-      }
-      depth += 1;
-      continue;
-    }
-
-    if (ch === "}") {
-      if (depth === 0) {
-        continue;
-      }
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        pushCandidate(text.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  return candidates;
-}
-
-function parseJsonFromModelResponse(response: string): unknown {
-  const cleaned = response.trim();
-  const candidates = extractJsonObjectCandidates(cleaned);
-
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      // Try next candidate shape
-    }
-  }
-
-  throw new Error("Model response did not contain parseable JSON");
-}
-
-function validateSplitCoverage(commits: Array<{ files: string[] }>, changedFiles: string[]): boolean {
-  if (commits.length === 0) return false;
-
-  const changed = new Set(changedFiles);
-  const covered = new Set<string>();
-
-  for (const commit of commits) {
-    if (!Array.isArray(commit.files) || commit.files.length === 0) {
-      return false;
-    }
-
-    for (const file of commit.files) {
-      if (!changed.has(file)) return false;
-      if (covered.has(file)) return false;
-      covered.add(file);
-    }
-  }
-
-  for (const file of changed) {
-    if (!covered.has(file)) return false;
-  }
-
-  return true;
-}
-
-export function parseModelResponse(
-  response: string,
-  changedFiles: string[],
-): {
-  proposal?: import("../lib/commit/types.ts").CommitProposal;
-  splitPlan?: import("../lib/commit/types.ts").SplitCommitPlan;
-} {
-  try {
-    const parsed = parseJsonFromModelResponse(response);
-    if (!isRecord(parsed)) {
-      return {};
-    }
-
-    if (parsed.type === "single" && isRecord(parsed.commit)) {
-      return {
-        proposal: {
-          type: sanitizeType(parsed.commit.type),
-          scope: sanitizeScope(parsed.commit.scope),
-          summary: sanitizeSummary(parsed.commit.summary),
-          details: sanitizeDetails(parsed.commit.details),
-          issueRefs: [],
-          warnings: [],
-        },
-      };
-    }
-
-    if (parsed.type === "split" && Array.isArray(parsed.commits)) {
-      const commits: Array<{
-        files: string[];
-        type: import("../lib/commit/types.ts").CommitType;
-        scope: string | null;
-        summary: string;
-        details: Array<{ text: string; userVisible: boolean }>;
-        issueRefs: string[];
-        dependencies: number[];
-      }> = [];
-
-      const commitCount = parsed.commits.length;
-      for (const rawCommit of parsed.commits) {
-        if (!isRecord(rawCommit)) {
-          return {};
-        }
-
-        commits.push({
-          files: sanitizeFiles(rawCommit.files),
-          type: sanitizeType(rawCommit.type),
-          scope: sanitizeScope(rawCommit.scope),
-          summary: sanitizeSummary(rawCommit.summary),
-          details: sanitizeDetails(rawCommit.details),
-          issueRefs: [],
-          dependencies: sanitizeDependencies(rawCommit.dependencies, commitCount),
-        });
-      }
-
-      if (!validateSplitCoverage(commits, changedFiles)) {
-        return {};
-      }
-
-      return {
-        splitPlan: {
-          commits,
-          warnings: [],
-          mode: parsed.mode === "hunk" ? "hunk" : "file",
-        },
-      };
-    }
-  } catch {
-    // Parse failed
-  }
-
-  return {};
 }

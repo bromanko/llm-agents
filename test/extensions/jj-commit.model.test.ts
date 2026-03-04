@@ -246,7 +246,7 @@ test("runModelInference: extracts first text block from mixed content", async ()
     },
   });
 
-  const result = await runModelInference({} as any, ctx, model as any, "prompt");
+  const result = await runModelInference(ctx, model as any, "prompt");
   assert.equal(result, "first text");
 });
 
@@ -286,7 +286,7 @@ test("runModelInference: passes resolved model, prompt message, and options", as
     },
   };
 
-  const result = await runModelInference({} as any, ctx as any, model as any, prompt);
+  const result = await runModelInference(ctx as any, model as any, prompt);
 
   assert.equal(result, "ok");
   assert.equal(capturedModel, registryModel);
@@ -337,8 +337,8 @@ test("runModelInference: resolves completion via importer fallback when injector
     },
   };
 
-  const first = await runModelInference({} as any, ctx as any, model as any, prompt);
-  const second = await runModelInference({} as any, ctx as any, model as any, prompt);
+  const first = await runModelInference(ctx as any, model as any, prompt);
+  const second = await runModelInference(ctx as any, model as any, prompt);
 
   assert.equal(first, "fallback ok");
   assert.equal(second, "fallback ok");
@@ -366,14 +366,43 @@ test("runModelInference: returns null for non-text or surprising content shapes"
     },
   });
 
-  assert.equal(await runModelInference({} as any, nonText, model as any, "prompt"), null);
-  assert.equal(await runModelInference({} as any, weirdShape, model as any, "prompt"), null);
+  assert.equal(await runModelInference(nonText, model as any, "prompt"), null);
+  assert.equal(await runModelInference(weirdShape, model as any, "prompt"), null);
 });
 
 test("runModelInference: returns null when model not found in registry", async () => {
   const notFound = makeInferenceContext({ availableModels: [] });
 
-  assert.equal(await runModelInference({} as any, notFound, model as any, "prompt"), null);
+  assert.equal(await runModelInference(notFound, model as any, "prompt"), null);
+});
+
+test("runModelInference: uses registry getAll fallback when find misses", async () => {
+  const registryModel = {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    api: "anthropic-messages",
+  };
+
+  let capturedModel: unknown;
+
+  setCompleteFn(async (resolvedModel) => {
+    capturedModel = resolvedModel;
+    return { content: [{ type: "text", text: "getAll ok" }] };
+  });
+
+  const ctx = {
+    modelRegistry: {
+      find: () => undefined,
+      getAll: () => [registryModel],
+      getApiKey: async () => "",
+    },
+  };
+
+  const result = await runModelInference(ctx as any, model as any, "prompt");
+
+  assert.equal(result, "getAll ok");
+  assert.equal(capturedModel, registryModel);
 });
 
 test("runModelInference: falls back to active session model when registry lookup misses", async () => {
@@ -403,7 +432,7 @@ test("runModelInference: falls back to active session model when registry lookup
     },
   };
 
-  const result = await runModelInference({} as any, ctx as any, model as any, "prompt");
+  const result = await runModelInference(ctx as any, model as any, "prompt");
 
   assert.equal(result, "session ok");
   assert.equal(capturedModel, activeModel);
@@ -440,7 +469,7 @@ test("runModelInference: allows undefined apiKey and still completes", async () 
     },
   };
 
-  const result = await runModelInference({} as any, ctx as any, model as any, "prompt");
+  const result = await runModelInference(ctx as any, model as any, "prompt");
 
   assert.equal(result, "oauth response");
   assert.equal(completeCalled, true);
@@ -475,7 +504,7 @@ test("runModelInference: normalizes blank apiKey to undefined", async () => {
     },
   };
 
-  const result = await runModelInference({} as any, ctx as any, model as any, "prompt");
+  const result = await runModelInference(ctx as any, model as any, "prompt");
 
   assert.equal(result, "oauth with blank key");
   assert.deepStrictEqual(capturedOptions, {
@@ -497,7 +526,7 @@ test("runModelInference: swallows API errors, logs debug context, and returns nu
     },
   };
 
-  const result = await runModelInference({} as any, ctx, model as any, "prompt");
+  const result = await runModelInference(ctx, model as any, "prompt");
 
   assert.equal(result, null);
   assert.equal(debugMessage, "runModelInference failed");
