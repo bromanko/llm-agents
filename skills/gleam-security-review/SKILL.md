@@ -13,6 +13,11 @@ description: This skill should be used when the user asks for "security review",
 
 Perform a comprehensive security audit of Gleam code, examining input validation, FFI boundaries, secrets handling, and potential vulnerabilities.
 
+**Before starting the review, read the shared security review guidelines** at
+[`../security-review-base/guidelines.md`](../security-review-base/guidelines.md)
+for false-positive filtering rules, confidence scoring, and output format
+requirements. Apply those rules throughout this review.
+
 ## Scope Determination
 
 First, determine what code to review:
@@ -25,11 +30,37 @@ First, determine what code to review:
 
 ## Review Process
 
-1. **Map the attack surface**: Identify entry points (HTTP handlers, CLI args, file inputs, external service calls)
-2. **Trace data flow**: Follow untrusted input through the codebase
-3. **Check each security domain** below
-4. **Review dependencies**: Check `gleam.toml` for known issues
-5. **Output findings** in the standard format
+1. **Understand existing security posture**: Identify security patterns,
+   validation helpers, FFI wrappers, and established conventions already in the
+   codebase before reviewing changes. Look for how the project currently handles
+   input validation, FFI boundaries, and error propagation.
+2. **Map the attack surface**: Identify entry points (HTTP handlers, CLI args,
+   file inputs, external service calls)
+3. **Trace data flow**: Follow untrusted input through the codebase
+4. **Check each security domain** below
+5. **Review dependencies**: Check `gleam.toml` for known issues
+6. **Apply false-positive filtering** from the shared guidelines and the
+   Gleam-specific rules below
+7. **Output findings** in the format specified by the shared guidelines
+
+## Gleam-Specific False-Positive Rules
+
+In addition to the shared guidelines:
+
+- Gleam is a memory-safe language on the BEAM — **do not report memory safety
+  issues** in pure Gleam code; only flag unsafe patterns at FFI boundaries
+  (Erlang NIFs, JavaScript FFI)
+- BEAM process isolation provides strong safety guarantees — focus on FFI
+  boundaries and data validation rather than process-level isolation concerns
+- `panic` and `todo` in non-production code paths (tests, development utilities)
+  are not security issues — only flag them in code reachable by production
+  request handling
+- Gleam's type system prevents many injection classes at compile time — focus on
+  boundaries where data enters or exits the Gleam runtime (HTTP, FFI, file I/O,
+  database queries)
+- Missing `Result` handling in internal helper functions is a code quality issue,
+  not a security issue, unless the unhandled error leads to a concrete bypass or
+  data exposure
 
 ## Security Checklist
 
@@ -67,7 +98,6 @@ First, determine what code to review:
 - HTTP requests use HTTPS
 - API responses validated before use
 - Timeouts configured for external calls
-- Rate limiting considered
 - No SQL/command injection in queries
 - Proper escaping for any interpolated values
 
@@ -75,15 +105,13 @@ First, determine what code to review:
 - Sensitive operations isolated in separate processes
 - Process crashes don't leak sensitive data
 - Supervision trees handle failures gracefully
-- No unbounded process spawning from user input
 - Message passing doesn't expose internal state inappropriately
 
 ### Unsafe Patterns
-- `panic` and `todo` not used in production paths
+- `panic` and `todo` not used in production request-handling paths
 - No `assert` on untrusted input
-- Error messages don't leak internal details
+- Error messages don't leak internal details to end users
 - Debug/development code not in production paths
-- No commented-out security checks
 
 ### Authentication & Authorization
 - Auth checks at appropriate boundaries
@@ -97,37 +125,3 @@ First, determine what code to review:
 - Logs don't contain PII or secrets
 - Error responses don't leak implementation details
 - Debug endpoints disabled in production
-
-## Output Format
-
-Present findings as:
-
-```markdown
-## Findings
-
-### [SEVERITY] Issue Title
-**File:** `path/to/file.gleam:LINE`
-**Category:** security
-
-**Issue:** Description of the vulnerability and potential impact.
-
-**Suggestion:** How to remediate, with code example if helpful.
-
-**Effort:** trivial|small|medium|large
-
----
-```
-
-Use severity indicators:
-- HIGH: Exploitable vulnerabilities, data exposure, auth bypass
-- MEDIUM: Defense-in-depth issues, missing validation, weak patterns
-- LOW: Hardening opportunities, best practice deviations
-
-## Summary
-
-After all findings, provide:
-- Total count by severity
-- Critical items requiring immediate attention
-- Attack surface summary (entry points identified)
-- Dependency risk assessment
-- Overall security posture (1-2 sentences)

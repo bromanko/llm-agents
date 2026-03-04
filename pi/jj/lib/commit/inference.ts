@@ -432,11 +432,21 @@ function sanitizeScope(value: unknown): string | null {
   return normalized;
 }
 
+function truncateToWordBoundary(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  const lastSpace = text.lastIndexOf(" ", maxLen);
+  if (lastSpace > 0) {
+    return text.slice(0, lastSpace);
+  }
+  return text.slice(0, maxLen);
+}
+
 function sanitizeSummary(value: unknown): string {
   if (typeof value !== "string") return "updated files";
-  // Remove control characters, collapse whitespace, enforce max length
-  const normalized = value.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 72);
-  return normalized.length > 0 ? normalized : "updated files";
+  // Remove control characters and enforce max length at word boundary
+  const normalized = value.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  if (normalized.length === 0) return "updated files";
+  return truncateToWordBoundary(normalized, 72);
 }
 
 function sanitizeDetails(value: unknown): Array<{ text: string; userVisible: boolean }> {

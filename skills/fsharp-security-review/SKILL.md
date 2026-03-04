@@ -13,6 +13,11 @@ description: This skill should be used when the user asks for "security review",
 
 Perform a comprehensive security audit of F# code, examining input validation, serialization boundaries, secrets handling, and potential vulnerabilities.
 
+**Before starting the review, read the shared security review guidelines** at
+[`../security-review-base/guidelines.md`](../security-review-base/guidelines.md)
+for false-positive filtering rules, confidence scoring, and output format
+requirements. Apply those rules throughout this review.
+
 ## Scope Determination
 
 First, determine what code to review:
@@ -25,11 +30,36 @@ First, determine what code to review:
 
 ## Review Process
 
-1. **Map the attack surface**: Identify entry points (HTTP handlers, CLI args, file inputs, external service calls)
-2. **Trace data flow**: Follow untrusted input through the codebase
-3. **Check each security domain** below
-4. **Review dependencies**: Check `.fsproj` and `paket.dependencies` / `nuget.config` for known issues
-5. **Output findings** in the standard format
+1. **Understand existing security posture**: Identify security frameworks,
+   middleware, validation libraries, and established conventions already in the
+   codebase before reviewing changes. Look for how the project currently handles
+   auth, input validation, serialization, and secrets management.
+2. **Map the attack surface**: Identify entry points (HTTP handlers, CLI args,
+   file inputs, external service calls)
+3. **Trace data flow**: Follow untrusted input through the codebase
+4. **Check each security domain** below
+5. **Review dependencies**: Check `.fsproj` and `paket.dependencies` /
+   `nuget.config` for known issues
+6. **Apply false-positive filtering** from the shared guidelines and the
+   F#-specific rules below
+7. **Output findings** in the format specified by the shared guidelines
+
+## F#-Specific False-Positive Rules
+
+In addition to the shared guidelines:
+
+- Memory safety issues from pure F# code are extremely unlikely — **only flag
+  unsafe interop via `NativePtr`, `NativeInterop`, P/Invoke, or `fixed`
+  statements**
+- F#'s type system and immutability-by-default prevent many classes of bugs —
+  focus on boundaries where data enters or leaves the system (HTTP, DB,
+  file I/O, deserialization, interop)
+- `failwith` messages in internal code paths are not information disclosure
+  unless the message is surfaced to end users via an API response
+- Missing `[<Authorize>]` on internal/non-routable functions is not a
+  vulnerability — only flag missing auth on actual HTTP endpoint handlers
+- `obj` downcasting in internal code is a code quality issue, not a security
+  issue, unless the `obj` originates from untrusted input
 
 ## Security Checklist
 
@@ -75,7 +105,6 @@ First, determine what code to review:
 - `HttpClient` reused (not created per-request)
 - API responses validated before use
 - Timeouts configured for external calls
-- Rate limiting considered
 - Certificate validation not disabled
 - No command injection in `Process.Start` calls
 
@@ -97,49 +126,12 @@ First, determine what code to review:
 
 ### Error Handling & Information Disclosure
 - Error messages don't leak internal details (stack traces, connection strings)
-- Custom error types don't expose sensitive data
+  to end users via API responses
 - Logging doesn't contain PII or secrets
 - Debug endpoints / `#if DEBUG` code not in production
-- `failwith` messages don't contain sensitive information
 - Exception filters don't silently swallow security-relevant errors
 
 ### Data Exposure
 - Sensitive fields excluded from serialization (`[<JsonIgnore>]`, etc.)
-- Logs don't contain PII or secrets
-- Error responses don't leak implementation details
 - API responses filtered to authorized data only
 - `ToString()` overrides don't expose sensitive fields
-
-## Output Format
-
-Present findings as:
-
-```markdown
-## Findings
-
-### [SEVERITY] Issue Title
-**File:** `path/to/File.fs:LINE`
-**Category:** security
-
-**Issue:** Description of the vulnerability and potential impact.
-
-**Suggestion:** How to remediate, with code example if helpful.
-
-**Effort:** trivial|small|medium|large
-
----
-```
-
-Use severity indicators:
-- HIGH: Exploitable vulnerabilities, data exposure, auth bypass
-- MEDIUM: Defense-in-depth issues, missing validation, weak patterns
-- LOW: Hardening opportunities, best practice deviations
-
-## Summary
-
-After all findings, provide:
-- Total count by severity
-- Critical items requiring immediate attention
-- Attack surface summary (entry points identified)
-- Dependency risk assessment
-- Overall security posture (1-2 sentences)

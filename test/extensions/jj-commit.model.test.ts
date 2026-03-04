@@ -127,6 +127,59 @@ test("parseModelResponse: handles invalid details and coerces invalid summary/sc
   ]);
 });
 
+test("parseModelResponse: truncates summaries exceeding 72 characters at word boundary", () => {
+  // 75-char summary that should be truncated
+  const longSummary = "added extremely detailed validation logic for the commit message parsing pipeline";
+  assert.ok(longSummary.length > 72);
+
+  const payload = JSON.stringify({
+    type: "single",
+    commit: {
+      type: "feat",
+      scope: "commit",
+      summary: longSummary,
+      details: [],
+    },
+  });
+
+  const parsed = parseModelResponse(payload, ["src/a.ts"]);
+  assert.ok(parsed.proposal);
+  assert.ok(parsed.proposal!.summary.length <= 72, `Expected <= 72 chars, got ${parsed.proposal!.summary.length}`);
+  // Should truncate at word boundary
+  assert.equal(parsed.proposal!.summary, "added extremely detailed validation logic for the commit message parsing");
+});
+
+test("parseModelResponse: truncates split commit summaries exceeding 72 characters", () => {
+  const longSummary = "refactored the entire authentication middleware stack to support new OAuth2 flow";
+  assert.ok(longSummary.length > 72);
+
+  const payload = JSON.stringify({
+    type: "split",
+    commits: [
+      {
+        files: ["a.ts"],
+        type: "refactor",
+        summary: longSummary,
+        details: [],
+        dependencies: [],
+      },
+      {
+        files: ["b.ts"],
+        type: "fix",
+        summary: "fixed tests",
+        details: [],
+        dependencies: [],
+      },
+    ],
+  });
+
+  const parsed = parseModelResponse(payload, ["a.ts", "b.ts"]);
+  assert.ok(parsed.splitPlan);
+  const truncated = parsed.splitPlan!.commits[0].summary;
+  assert.ok(truncated.length <= 72, `Expected <= 72 chars, got ${truncated.length}`);
+  assert.equal(truncated, "refactored the entire authentication middleware stack to support new");
+});
+
 test("parseModelResponse: rejects invalid split payload shapes", () => {
   const notArray = JSON.stringify({ type: "split", commits: { files: ["a.ts"] } });
   const invalidEntry = JSON.stringify({ type: "split", commits: ["bad-entry"] });

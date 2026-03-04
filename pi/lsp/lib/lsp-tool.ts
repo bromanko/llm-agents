@@ -7,7 +7,7 @@
 
 import * as path from "node:path";
 
-import type { LspAction, LspToolParams, LanguageStatus } from "./types.ts";
+import { LSP_ACTIONS, type LspAction, type LspToolParams, type LanguageStatus } from "./types.ts";
 import { toLspPosition, fileUri } from "./lsp-client.ts";
 import type { ManagedServer } from "./server-manager.ts";
 import type { LspClient } from "./lsp-client.ts";
@@ -32,6 +32,22 @@ interface LspDiagnostic {
   severity?: number;
 }
 
+interface LspLocation {
+  uri: string;
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+}
+
+interface LspLocationLink {
+  targetUri: string;
+  targetSelectionRange?: LspLocation["range"];
+  targetRange?: LspLocation["range"];
+}
+
+type LocationResult = LspLocation | LspLocation[] | LspLocationLink[] | null;
+
 export interface LspToolDeps {
   listLanguagesStatus: () => LanguageStatus[];
   resolveServerForFile: (filePath: string) => string | null;
@@ -46,15 +62,17 @@ interface ToolResult {
 
 // --- Action validation ---
 
-const VALID_ACTIONS: Set<string> = new Set([
-  "languages", "diagnostics", "definition", "references", "hover",
-  "symbols", "rename", "code_actions", "incoming_calls", "outgoing_calls",
+const VALID_ACTIONS: ReadonlySet<LspAction> = new Set(LSP_ACTIONS);
+
+const NON_POSITION_ACTIONS: ReadonlySet<LspAction> = new Set([
+  "languages",
+  "diagnostics",
+  "symbols",
 ]);
 
-const POSITION_ACTIONS: Set<string> = new Set([
-  "definition", "references", "hover", "rename", "code_actions",
-  "incoming_calls", "outgoing_calls",
-]);
+const POSITION_ACTIONS: ReadonlySet<LspAction> = new Set(
+  LSP_ACTIONS.filter((action) => !NON_POSITION_ACTIONS.has(action)),
+);
 
 // --- Schema ---
 
@@ -63,10 +81,7 @@ const parameters = {
   properties: {
     action: {
       type: "string",
-      enum: [
-        "languages", "diagnostics", "definition", "references", "hover",
-        "symbols", "rename", "code_actions", "incoming_calls", "outgoing_calls",
-      ],
+      enum: [...LSP_ACTIONS],
       description: "The LSP action to perform.",
     },
     file: {
@@ -106,6 +121,25 @@ function textResult(text: string): ToolResult {
 
 function errorResult(text: string): ToolResult {
   return textResult(`Error: ${text}`);
+}
+
+function isLocationLink(location: LspLocation | LspLocationLink): location is LspLocationLink {
+  return "targetUri" in location;
+}
+
+function normalizeLocationResult(result: LocationResult): LspLocation | LspLocation[] | null {
+  if (!result) return result;
+  if (!Array.isArray(result)) return result;
+  if (result.length === 0) return result;
+  if (!isLocationLink(result[0])) return result;
+
+  return result
+    .map((link) => {
+      const range = link.targetSelectionRange ?? link.targetRange;
+      if (!range) return null;
+      return { uri: link.targetUri, range };
+    })
+    .filter((location): location is LspLocation => location !== null);
 }
 
 // --- Tool factory ---
@@ -184,6 +218,14 @@ export function createLspToolDefinition(deps: LspToolDeps) {
               position,
             });
             return textResult(renderLocations(result as any));
+          }
+
+          case "implementation": {
+            const result = await client.request<LocationResult>("textDocument/implementation", {
+              textDocument: { uri },
+              position,
+            });
+            return textResult(renderLocations(normalizeLocationResult(result)));
           }
 
           case "references": {
