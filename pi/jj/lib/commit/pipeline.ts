@@ -86,7 +86,7 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
   const { jj, args } = ctx;
   const warnings: string[] = [];
   const messages: string[] = [];
-  const progress = ctx.onProgress ?? (() => {});
+  const progress = ctx.onProgress ?? (() => { });
 
   // 1. Check for changes
   progress("Checking working copy...");
@@ -174,7 +174,18 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
   if (!proposal && !splitPlan) {
     progress("Using deterministic fallback...");
     proposal = generateFallbackProposal(changedFiles);
-    warnings.push(...proposal.warnings);
+
+    if (modelResult.model) {
+      if (ctx.runAgenticSession) {
+        warnings.push(
+          "Model response could not be converted into a valid commit plan; using deterministic fallback.",
+        );
+      } else {
+        warnings.push("No agentic session runner available; using deterministic fallback.");
+      }
+    } else {
+      warnings.push(...proposal.warnings);
+    }
   }
 
   // Validate split plans before any changelog/file mutations or execution.

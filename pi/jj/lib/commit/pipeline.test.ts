@@ -260,6 +260,43 @@ test("pipeline: falls back to deterministic on agentic failure", async () => {
   assert.ok(result.warnings.some((w) => w.includes("Agentic session failed")));
 });
 
+test("pipeline: warns when model returns no usable proposal", async () => {
+  const jj = createMockJj({ changedFiles: ["src/main.ts"], diff: "diff", stat: "stat" });
+  const ctx = createBasicContext({
+    jj: jj as any,
+    availableModels: [sessionModel],
+    sessionModel,
+    hasApiKey: async () => true,
+    runAgenticSession: async () => ({}),
+  });
+
+  const result = await runCommitPipeline(ctx);
+
+  assert.equal(result.committed, true);
+  assert.ok(
+    result.warnings.some((w) => w.includes("could not be converted into a valid commit plan")),
+  );
+  assert.ok(result.warnings.every((w) => !w.includes("no model available")));
+});
+
+test("pipeline: warns when model available but no agentic session runner", async () => {
+  const jj = createMockJj({ changedFiles: ["src/main.ts"], diff: "diff", stat: "stat" });
+  const ctx = createBasicContext({
+    jj: jj as any,
+    availableModels: [sessionModel],
+    sessionModel,
+    hasApiKey: async () => true,
+    runAgenticSession: undefined,
+  });
+
+  const result = await runCommitPipeline(ctx);
+
+  assert.equal(result.committed, true);
+  assert.ok(
+    result.warnings.some((w) => w.includes("No agentic session runner available")),
+  );
+});
+
 test("pipeline: executes split commits in dependency order", async () => {
   const splitPlan: SplitCommitPlan = {
     commits: [
@@ -621,7 +658,7 @@ test("pipeline: model fallback warning is included", async () => {
 
 test("pushWithBookmark: sets bookmark and pushes", async () => {
   const jj = createMockJj();
-  const result = await pushWithBookmark(jj as any, "main", () => {});
+  const result = await pushWithBookmark(jj as any, "main", () => { });
   assert.equal(result.success, true);
   assert.deepStrictEqual(jj._bookmarkCalls, [["main", "@-"]]);
   assert.deepStrictEqual(jj._pushCalls, ["main"]);
@@ -632,7 +669,7 @@ test("pushWithBookmark: returns error on failure", async () => {
   jj.pushBookmark = async () => {
     throw new Error("no remote configured");
   };
-  const result = await pushWithBookmark(jj as any, "main", () => {});
+  const result = await pushWithBookmark(jj as any, "main", () => { });
   assert.equal(result.success, false);
   assert.ok(result.error?.includes("no remote"));
 });
