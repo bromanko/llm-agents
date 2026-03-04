@@ -451,6 +451,40 @@ test("runModelInference: allows undefined apiKey and still completes", async () 
   });
 });
 
+test("runModelInference: normalizes blank apiKey to undefined", async () => {
+  let capturedOptions: any;
+
+  setCompleteFn(async (_model, _context, options) => {
+    capturedOptions = options;
+    return {
+      content: [{ type: "text", text: "oauth with blank key" }],
+    };
+  });
+
+  const registryModel = {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    api: "anthropic-messages",
+  };
+
+  const ctx = {
+    modelRegistry: {
+      find: () => registryModel,
+      getApiKey: async () => "",
+    },
+  };
+
+  const result = await runModelInference({} as any, ctx as any, model as any, "prompt");
+
+  assert.equal(result, "oauth with blank key");
+  assert.deepStrictEqual(capturedOptions, {
+    apiKey: undefined,
+    maxTokens: 2048,
+    temperature: 0.2,
+  });
+});
+
 test("runModelInference: swallows API errors, logs debug context, and returns null", async () => {
   const ctx = makeInferenceContext({ throwOnComplete: true }) as any;
 
