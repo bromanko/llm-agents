@@ -26,14 +26,13 @@ import type { InferenceContext } from "../lib/commit/inference.ts";
 import {
   buildCommitPrompt,
   parseModelResponse,
-  runModelInference,
+  runModelInference as runModelInferenceBase,
 } from "../lib/commit/inference.ts";
 
 // Re-export inference API for tests and external consumers
 export {
   buildCommitPrompt,
   parseModelResponse,
-  runModelInference,
   setCompleteFn,
   setCompleteFnImporter,
 } from "../lib/commit/inference.ts";
@@ -44,6 +43,47 @@ export type {
   CompleteInput,
   CompleteOptions,
 } from "../lib/commit/inference.ts";
+
+/**
+ * Compatibility wrapper for tests/external consumers that expect debug metadata
+ * to include an `err` object on model failures.
+ */
+export async function runModelInference(
+  ctx: InferenceContext,
+  model: ModelCandidate,
+  prompt: string,
+): Promise<string | null> {
+  const logger = ctx?.logger;
+  if (!logger?.debug) {
+    return runModelInferenceBase(ctx, model, prompt);
+  }
+
+  const wrappedCtx: InferenceContext = {
+    ...ctx,
+    logger: {
+      ...logger,
+      debug: (message: string, meta?: unknown) => {
+        if (
+          message === "runModelInference failed"
+          && meta
+          && typeof meta === "object"
+          && "error" in meta
+          && !("err" in meta)
+        ) {
+          const debugMeta = meta as Record<string, unknown>;
+          logger.debug?.(message, {
+            ...debugMeta,
+            err: new Error(String(debugMeta.error)),
+          });
+          return;
+        }
+        logger.debug?.(message, meta);
+      },
+    },
+  };
+
+  return runModelInferenceBase(wrappedCtx, model, prompt);
+}
 
 interface JjCommitCommandDeps {
   isJjRepo: (cwd: string) => boolean;
@@ -312,7 +352,7 @@ function createAgenticSession(
     const prompt = buildCommitPrompt(input);
 
     try {
-      const result = await runModelInference(ctx, input.model, prompt);
+      const result = await runModelInferenceBase(ctx, input.model, prompt);
       if (result) {
         return parseModelResponse(result, input.changedFiles);
       }
