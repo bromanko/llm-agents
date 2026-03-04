@@ -414,6 +414,11 @@ interface InferenceLogger {
 interface InferenceContext {
   modelRegistry?: ModelRegistryForInference;
   logger?: InferenceLogger;
+  model?: {
+    provider?: string;
+    id?: string;
+    [key: string]: unknown;
+  };
 }
 
 let _completeFn: CompleteFn | undefined;
@@ -451,16 +456,34 @@ export async function runModelInference(
 ): Promise<string | null> {
   try {
     const registryModel = ctx.modelRegistry?.find(model.provider, model.id);
-    if (!registryModel) return null;
+    const sessionModel =
+      ctx.model
+        && ctx.model.provider === model.provider
+        && ctx.model.id === model.id
+        ? ctx.model
+        : undefined;
 
-    // Resolve API key — may be undefined for OAuth-authenticated models,
-    // in which case completeSimple will use the provider's own auth.
-    const apiKey = await ctx.modelRegistry?.getApiKey(registryModel);
+    // Some providers expose a session model that may not appear in the model
+    // registry lookup (e.g. OAuth-backed session adapters). Use that active
+    // model object as a fallback so we still attempt inference before giving up.
+    const resolvedModel = registryModel ?? sessionModel;
+    if (!resolvedModel) return null;
+
+    // Resolve API key when we have a registry model — may be undefined for
+    // OAuth-authenticated models, in which case completeSimple will use the
+    // provider's own auth/session path.
+    let apiKey: string | undefined;
+    if (registryModel && ctx.modelRegistry) {
+      const resolvedApiKey = await ctx.modelRegistry.getApiKey(registryModel);
+      if (typeof resolvedApiKey === "string" && resolvedApiKey.trim().length > 0) {
+        apiKey = resolvedApiKey;
+      }
+    }
 
     // Use the pi-ai completeSimple API which properly dispatches through
     // the registered API provider for the model's api type.
     const complete = await getCompleteFn();
-    const response = await complete(registryModel, {
+    const response = await complete(resolvedModel, {
       messages: [
         { role: "user", content: [{ type: "text", text: prompt }] },
       ],
@@ -586,14 +609,89 @@ function sanitizeDependencies(value: unknown, maxIndex: number): number[] {
   return deps;
 }
 
-function parseJsonFromModelResponse(response: string): unknown {
-  let cleaned = response.trim();
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned
-      .replace(/^```[\w-]*\s*\r?\n?/, "")
-      .replace(/(?:\r?\n)?```\s*$/, "");
+function extractJsonObjectCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  const pushCandidate = (raw: string) => {
+    const candidate = raw.trim();
+    if (!candidate || seen.has(candidate)) return;
+    seen.add(candidate);
+    candidates.push(candidate);
+  };
+
+  // 1) Whole response (best case: model returned plain JSON)
+  pushCandidate(text);
+
+  // 2) JSON fenced code blocks anywhere in the response
+  const fencedBlockRe = /```(?:json|JSON)?\s*([\s\S]*?)```/g;
+  let fencedMatch: RegExpExecArray | null = fencedBlockRe.exec(text);
+  while (fencedMatch) {
+    pushCandidate(fencedMatch[1]);
+    fencedMatch = fencedBlockRe.exec(text);
   }
-  return JSON.parse(cleaned);
+
+  // 3) Any balanced top-level JSON object embedded in prose
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      if (depth === 0) {
+        start = i;
+      }
+      depth += 1;
+      continue;
+    }
+
+    if (ch === "}") {
+      if (depth === 0) {
+        continue;
+      }
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        pushCandidate(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function parseJsonFromModelResponse(response: string): unknown {
+  const cleaned = response.trim();
+  const candidates = extractJsonObjectCandidates(cleaned);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try next candidate shape
+    }
+  }
+
+  throw new Error("Model response did not contain parseable JSON");
 }
 
 function validateSplitCoverage(commits: Array<{ files: string[] }>, changedFiles: string[]): boolean {

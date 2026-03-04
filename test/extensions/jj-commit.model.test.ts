@@ -68,6 +68,31 @@ ${unfenced}
   ]);
 });
 
+test("parseModelResponse: parses prose-wrapped fenced JSON responses", () => {
+  const body = JSON.stringify({
+    type: "single",
+    commit: {
+      type: "fix",
+      scope: "commit",
+      summary: "fixed commit parsing",
+      details: [],
+    },
+  });
+
+  const wrapped = [
+    "Here's the proposal:",
+    "```json",
+    body,
+    "```",
+    "Let me know if you want it split.",
+  ].join("\n");
+
+  const parsed = parseModelResponse(wrapped, ["src/a.ts"]);
+
+  assert.equal(parsed.proposal?.type, "fix");
+  assert.equal(parsed.proposal?.summary, "fixed commit parsing");
+});
+
 test("parseModelResponse: returns empty object for non-JSON output", () => {
   const parsed = parseModelResponse("I think this should be a feat commit", ["src/a.ts"]);
   assert.deepStrictEqual(parsed, {});
@@ -349,6 +374,44 @@ test("runModelInference: returns null when model not found in registry", async (
   const notFound = makeInferenceContext({ availableModels: [] });
 
   assert.equal(await runModelInference({} as any, notFound, model as any, "prompt"), null);
+});
+
+test("runModelInference: falls back to active session model when registry lookup misses", async () => {
+  const activeModel = {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    api: "anthropic-messages",
+  };
+
+  let capturedModel: unknown;
+  let capturedOptions: any;
+
+  setCompleteFn(async (resolvedModel, _context, options) => {
+    capturedModel = resolvedModel;
+    capturedOptions = options;
+    return { content: [{ type: "text", text: "session ok" }] };
+  });
+
+  const ctx = {
+    model: activeModel,
+    modelRegistry: {
+      find: () => undefined,
+      getApiKey: async () => {
+        throw new Error("getApiKey should not run without a registry model");
+      },
+    },
+  };
+
+  const result = await runModelInference({} as any, ctx as any, model as any, "prompt");
+
+  assert.equal(result, "session ok");
+  assert.equal(capturedModel, activeModel);
+  assert.deepStrictEqual(capturedOptions, {
+    apiKey: undefined,
+    maxTokens: 2048,
+    temperature: 0.2,
+  });
 });
 
 test("runModelInference: allows undefined apiKey and still completes", async () => {
