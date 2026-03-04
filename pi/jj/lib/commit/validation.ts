@@ -259,43 +259,16 @@ export function validateSplitPlan(
 }
 
 // ---------------------------------------------------------------------------
-// Dependency cycle detection (Kahn's algorithm)
+// Dependency ordering (Kahn's algorithm)
 // ---------------------------------------------------------------------------
 
+/**
+ * Check for dependency cycles in a split commit plan.
+ * Returns an error message if a cycle exists, null otherwise.
+ */
 export function detectDependencyCycle(groups: SplitCommitGroup[]): string | null {
-  const total = groups.length;
-  const inDegree = new Array<number>(total).fill(0);
-  const edges: Set<number>[] = Array.from({ length: total }, () => new Set());
-
-  for (let i = 0; i < total; i++) {
-    for (const dep of groups[i].dependencies) {
-      if (dep < 0 || dep >= total) continue;
-      if (!edges[dep].has(i)) {
-        edges[dep].add(i);
-        inDegree[i]++;
-      }
-    }
-  }
-
-  const queue: number[] = [];
-  for (let i = 0; i < total; i++) {
-    if (inDegree[i] === 0) queue.push(i);
-  }
-
-  const order: number[] = [];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    order.push(current);
-    for (const next of edges[current]) {
-      inDegree[next]--;
-      if (inDegree[next] === 0) queue.push(next);
-    }
-  }
-
-  if (order.length !== total) {
-    return "Circular dependency detected in split commit plan.";
-  }
-  return null;
+  const result = computeDependencyOrder(groups);
+  return "error" in result ? result.error : null;
 }
 
 /**
