@@ -20,6 +20,7 @@ import { computeDependencyOrder, validateSplitPlan } from "./validation.ts";
 import { detectChangelogBoundaries, parseUnreleasedSection, applyChangelogEntries } from "./changelog.ts";
 import { promises as fs } from "node:fs";
 
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -178,7 +179,7 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
     if (modelResult.model) {
       if (ctx.runAgenticSession) {
         warnings.push(
-          "Model response could not be converted into a valid commit plan; using deterministic fallback.",
+          `Model response could not be converted into a valid commit plan.${debugSuffix}`,
         );
       } else {
         warnings.push("No agentic session runner available; using deterministic fallback.");

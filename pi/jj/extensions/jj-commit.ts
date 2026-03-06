@@ -28,6 +28,9 @@ import {
   parseModelResponse,
   runModelInference,
 } from "../lib/commit/inference.ts";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Re-export inference API for tests and external consumers
 export {
@@ -314,7 +317,24 @@ function createAgenticSession(
     try {
       const result = await runModelInference(ctx, input.model, prompt);
       if (result) {
-        return parseModelResponse(result, input.changedFiles);
+        const parsed = parseModelResponse(result, input.changedFiles);
+        if (!parsed.proposal && !parsed.splitPlan) {
+          // Write failed response to a temp file for debugging
+          try {
+            const debugDir = join(tmpdir(), "pi-jj-commit-debug");
+            mkdirSync(debugDir, { recursive: true });
+            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+            const debugPath = join(debugDir, `failed-response-${timestamp}.txt`);
+            writeFileSync(debugPath, `Model: ${input.model.provider}::${input.model.id}\nChanged files: ${input.changedFiles.join(", ")}\n\n--- Raw Response ---\n${result}`);
+            ctx.logger?.debug?.(
+              `Model response could not be parsed into a commit plan. Raw response saved to: ${debugPath}`,
+            );
+            return { debugPath };
+          } catch {
+            // Best-effort — don't let debug logging break the pipeline
+          }
+        }
+        return parsed;
       }
     } catch {
       // Fall through to no result
