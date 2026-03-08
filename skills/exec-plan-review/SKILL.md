@@ -1,168 +1,198 @@
 ---
 name: exec-plan-review
 description: >
-  Review execution plans (ExecPlans) for completeness, clarity, and implementability.
-  Use this skill when the user asks to "review a plan", "review this exec plan",
-  "critique this plan", "is this plan good enough", "check this plan", "audit this
-  plan", "review my PLAN.md", or wants feedback on whether an execution plan is
-  ready for a developer or coding agent to implement. Also trigger when the user
-  mentions "plan review", "plan quality", or asks if a plan is "implementable" or
-  "self-contained enough".
+  Review execution plans (ExecPlans) adversarially for soundness, risk, clarity,
+  and implementability. Use this skill when the user asks to "review a plan",
+  "review this exec plan", "critique this plan", "is this plan good enough",
+  "check this plan", "audit this plan", "review my PLAN.md", "tear this
+  plan apart", "poke holes in this plan", "stress-test this plan", or wants
+  feedback on whether an execution plan is both executable and a good idea. Also
+  trigger when the user mentions "plan review", "plan quality", asks whether a
+  plan is "implementable" or "self-contained enough", or wants a skeptical,
+  adversarial review of a proposed implementation approach or design direction.
 ---
 
-# ExecPlan Review
+# Adversarial ExecPlan Review
 
-Review an execution plan for completeness, clarity, and implementability. The goal is to determine whether a skilled developer — who has zero context about the codebase, toolchain, or problem domain — can pick up the plan and deliver working software without asking questions.
+Review an execution plan with two goals:
 
-Read the exec-plan skill at `../exec-plan/SKILL.md` to understand the full authoring standard — particularly the "Who This Plan Is For" section, which defines the developer profile. This review skill evaluates plans against that standard plus the additional criteria below.
+1. Determine whether a skilled developer or coding agent could implement it without getting stuck.
+2. Determine whether the plan is actually good — meaning it solves the right problem, uses a proportionate design, addresses likely failure modes, and is worth implementing as written.
+
+Do not review the plan as a friendly editor. Review it as a skeptical technical lead performing a pre-mortem. Assume that if the plan is vague, overcomplicated, poorly sequenced, unsafe, or based on a weak premise, a future implementer will faithfully build the wrong thing. Your job is to find those problems before implementation begins.
+
+Read the exec-plan skill at `../exec-plan/SKILL.md` to understand the full authoring standard — particularly the "Who This Plan Is For" section, which defines the developer profile. This review skill evaluates plans against that standard plus the adversarial criteria below.
 
 
 ## Review Process
 
 1. **Read the entire plan** from top to bottom before writing any feedback.
 2. **Read the exec-plan skill** at `../exec-plan/SKILL.md` to refresh the authoring standard.
-3. **Evaluate against each checklist section** below.
-4. **Output findings** in the format specified at the end of this document.
+3. **Identify the claimed outcome**: what user-visible or operator-visible result the plan says it will produce.
+4. **Pressure-test the approach before the prose**:
+   - Is this the right problem to solve?
+   - Is the proposed design proportionate to the problem?
+   - Is there a simpler, safer, or more reversible path?
+   - What assumptions could be false?
+   - What happens if the implementer follows the plan exactly and the plan is wrong?
+5. **Then evaluate executability**: whether a developer could carry it out safely, concretely, and with enough validation to catch failure.
+6. **Output findings** in the format specified at the end of this document.
+
+Prefer findings that would change whether the team should implement the plan, how it should be sequenced, or what design it should use. Cosmetic comments are low priority.
+
+
+## Adversarial Lens
+
+Use these questions throughout the review:
+
+- **Wrong problem**: Does the plan optimize or rebuild something without proving that the user or business problem is real and current?
+- **Wrong level of ambition**: Is the plan too big, too abstract, or too invasive for the outcome it promises?
+- **Unproven assumptions**: What must be true for this plan to work? Does the plan verify those assumptions early?
+- **Simpler alternative ignored**: Is there a smaller or lower-risk change that would achieve most of the value?
+- **Hidden blast radius**: What existing behaviors, interfaces, migrations, operators, or downstream systems could break?
+- **Poor failure handling**: If the change partially works, fails mid-flight, or needs rollback, does the plan keep the system safe?
+- **Non-falsifiable success**: Could the plan "succeed" on paper while still delivering little or no real user value?
+- **Cargo-cult complexity**: Does the plan introduce abstractions, layers, or infrastructure that sound sophisticated but are not justified by the current requirement?
+
+If the answer to any of these is "yes" or "maybe," raise it explicitly.
+
+Do not spend review energy on writing style unless it creates real ambiguity, hides risk, or makes the plan harder to execute safely.
 
 
 ## Review Checklist
 
-### Self-Containment
+### Problem Framing and User Value
 
-The plan must be a standalone document. A developer with only the plan and the working tree must be able to succeed.
+The plan must be worth doing, not merely possible to execute.
+
+- The plan states the concrete problem in user or operator terms, not just desired code changes.
+- The promised outcome is observable. A reader can tell what becomes easier, safer, faster, or newly possible after implementation.
+- The scope matches the problem. No gold-plating, platform-building, or speculative extensibility for future use cases that are not required now.
+- If the plan claims performance, reliability, security, or usability improvement, it states how that claim will be measured or observed.
+- The plan distinguishes between the real need and an implementation preference. "Use technology X" is not itself a valid purpose.
+- If a materially simpler approach could deliver most of the value, the plan either chooses it or explains why it is insufficient.
+- If the plan solves only part of the stated problem, it says so plainly and defines the boundary.
+
+### Strategy and Architecture
+
+The overall approach should be technically sound and proportionate.
+
+- The design is likely to work in this repository as described. It is not hand-wavy about key interactions, interfaces, migrations, or compatibility concerns.
+- The plan reuses existing modules, conventions, and infrastructure where reasonable instead of inventing parallel systems.
+- Irreversible or high-blast-radius changes are justified and, where possible, deferred until lower-risk validation happens first.
+- Unknowns are de-risked early. If feasibility is unclear, the plan includes a prototype, spike, or narrow validation milestone before committing to a broad refactor.
+- Sequencing is sensible. The plan does not front-load major rewrites before proving necessity.
+- The architecture is proportionate to the problem. No extra service, abstraction layer, configuration surface, or generic framework unless the current work genuinely requires it.
+- Existing compatibility contracts are preserved, migrated safely, or intentionally broken with explicit migration steps and validation.
+- Risky decisions remain reversible where practical.
+
+### Risks, Failure Modes, and Safety
+
+A good plan anticipates what can go wrong.
+
+- The plan identifies likely failure modes: bad input, partial rollout, data migration issues, race conditions, duplicate work, stale state, compatibility breaks, operational confusion, or user-visible regressions.
+- Destructive operations, schema changes, backfills, or removals include rollback or containment steps.
+- The plan says how to detect failure in practice — through tests, logs, metrics, UI behavior, API responses, or command output.
+- Edge cases are treated as first-class work, not as an afterthought.
+- If the change affects security, privacy, access control, or trust boundaries, the plan includes explicit validation for those concerns.
+- If the change affects performance or scalability, the plan includes a way to verify that it does not regress unacceptable paths.
+- The plan does not assume a perfect operator or a perfectly clean environment.
+
+### Executability
+
+The plan must be concrete enough for a developer with only the plan and the working tree to execute it safely.
 
 - Every term of art is defined in plain language where it first appears. No jargon is assumed understood.
 - No references to "the architecture doc", "the wiki", "the prior plan", external blog posts, or anything outside the plan and the repository. If knowledge is required, it is embedded in the plan.
 - The repository layout relevant to this work is described explicitly: which directories matter, what lives where, how the pieces connect.
-- Build, test, and run commands are stated in full — the working directory, the exact command, and the expected output. Not "run the tests" but "from the repo root, run `npm test` and expect all 47 tests to pass."
+- Steps are small, unambiguous actions that take roughly 2–5 minutes and do not require the implementer to invent design details.
+- Where applicable, steps follow the TDD cycle: write failing test, run it, make it pass, rerun tests, commit.
+- Each step names the exact file(s) to touch, with full repository-relative paths, and states what to add, change, or remove.
+- Build, test, and run commands are stated in full — the working directory, the exact command, and the expected output.
 - Environment assumptions (OS, language version, installed tools, environment variables) are stated or can be inferred from the repo.
+- Commit points are called out explicitly, and the system remains in a working state at each commit point.
 
-### Task Granularity
+### Testing and Falsifiability
 
-Each step in the plan should be a single, unambiguous action that takes roughly 2–5 minutes. The developer should never wonder "what do I do next?" or "am I done with this step?"
-
-- Steps follow the TDD cycle where applicable:
-  1. Write the failing test — one step.
-  2. Run the test to confirm it fails — one step.
-  3. Write the minimal code to make the test pass — one step.
-  4. Run the tests to confirm they pass — one step.
-  5. Commit — one step.
-- Each step names the exact file(s) to touch, with full repository-relative paths.
-- Each step describes what to add, change, or remove — not vaguely ("update the handler") but concretely ("in `src/handlers/auth.ts`, add a new function `validateToken` that takes a `string` and returns a `Result<Claims, AuthError>`").
-- Steps that produce output (running tests, starting a server, making a request) include the expected output so the developer can tell success from failure.
-- No step requires the developer to make a design decision. If a decision is needed, the plan makes it and explains why.
-- No step bundles multiple unrelated changes. "Add the type and write the test and update the config" is three steps, not one.
-
-### Testing Guidance
-
-Assume the developer will not invent good tests on their own. The plan must specify exactly what to test and how.
+Assume the developer will not invent good tests on their own. The plan must specify exactly what to test and how. It must also make it possible to prove the plan wrong.
 
 - Every new behavior has at least one test specified in the plan — not "write tests for this" but "write a test that calls `parse("")` and asserts it returns `Err(EmptyInput)`."
-- Edge cases are called out explicitly. The developer should not have to think about what the edge cases are.
+- The tests cover the core claim of the plan, not just helper functions or happy paths.
+- Edge cases and negative cases are called out explicitly. The developer should not have to think about what the edge cases are.
 - Test file locations are named with full paths.
 - The test runner command is stated, including how to run a single test or a subset.
 - Expected test output (pass/fail counts, specific assertion messages) is described so the developer knows what "working" looks like.
 - When a test should fail before implementation (red phase of TDD), the plan says so and describes what the failure looks like.
 - Integration or end-to-end validation steps are included where appropriate — not just unit tests.
+- If the plan makes non-functional claims (performance, resilience, safety), it includes a concrete way to falsify those claims.
 
-### Design Principles
+### Validation and Rollout
 
-The plan should guide the developer toward clean, maintainable code.
+The plan must show how to prove success in reality, not only in unit tests.
 
-- **DRY**: The plan does not instruct the developer to duplicate logic. If two steps touch similar code, the plan explains where to extract the common part.
-- **YAGNI**: The plan does not introduce abstractions, interfaces, or features that are not required by the current work. No "we might need this later."
-- **Minimal scope**: Each milestone delivers the smallest useful increment. No milestone tries to do everything at once.
-- **Additive changes**: Where possible, steps add new code before modifying or removing old code, keeping the system working at every commit point.
-
-### Commit Discipline
-
-The plan should produce a clean, readable commit history.
-
-- Commit points are called out explicitly. The developer should never wonder when to commit.
-- Each commit represents a logical, self-contained unit of progress — a passing test, a completed refactor step, a new function with its tests.
-- Commit messages are suggested or the plan describes what the commit should contain clearly enough to write one.
-- The system should be in a working state (tests pass) at every commit point. No "commit the broken intermediate state."
-
-### Milestones and Validation
-
-- Each milestone has a clear, observable outcome — not "the auth module is done" but "running `curl -X POST localhost:8080/login -d '{"user":"test","pass":"test"}'` returns a 200 with a JSON body containing a `token` field."
-- Milestones are independently verifiable. You can confirm a milestone is complete without reference to future milestones.
-- Milestones build incrementally. Each milestone works on its own, and later milestones extend — not replace — earlier ones.
+- Each milestone has a clear, observable outcome.
+- Milestones are independently verifiable and build incrementally.
 - Validation steps are concrete: the exact command, the expected output, and what to do if it does not match.
+- The sequence of milestones reduces risk early instead of postponing the hardest unknowns until the end.
+- If the work changes an existing interface, deployment path, data format, or operator workflow, the plan explains how to roll it out safely.
+- If rollback, fallback, coexistence, feature-flagging, or migration windows matter, the plan specifies them.
+- Success criteria are tied to real behavior, not merely "code added" or "tests passed."
 
-### Living Document Sections
+### Format Compliance
 
-The exec-plan standard requires four mandatory sections. Check that all are present and properly structured:
+Check compliance with the ExecPlan format, but do not let mechanical formatting comments crowd out strategic critique.
 
-- **Progress** — A checklist of granular steps with timestamps. Must reflect actual state.
-- **Surprises & Discoveries** — Space to record unexpected findings during implementation.
-- **Decision Log** — Space to record design decisions with rationale and dates.
-- **Outcomes & Retrospective** — Space to capture lessons learned at milestones and completion.
-
-### Files, Paths, and Code References
-
-- Every file mentioned uses a full repository-relative path (e.g., `src/auth/handler.ts`, not "the handler file" or "handler.ts").
-- New files state where they should be created.
-- When referencing existing code, the plan names the function, type, or module — not "the function that does X" but "`validateToken` in `src/auth/token.ts`."
-- When code must be written, the plan includes enough detail (signatures, types, behavior) that the developer does not need to invent the API. Pseudocode or actual code snippets are included where helpful.
-- Dependencies (libraries, packages) are named with versions where it matters.
-
-### Clarity and Readability
-
-- The plan reads as a narrative, not a wall of bullet points. Prose explains the why; steps explain the what.
-- The purpose section makes clear what the user gains — not what the code does, but what someone can do after the change that they could not do before.
-- Sections flow logically. The reader does not need to jump around to understand the work.
-- Ambiguities are resolved in the plan, not left for the developer. Where genuine ambiguity remains, it is marked with `[CLARIFY]` and alternatives are offered.
+- The four required living-document sections are present and meaningful:
+  - **Progress** — A checklist of granular steps with timestamps.
+  - **Surprises & Discoveries** — Space to record unexpected findings during implementation.
+  - **Decision Log** — Space to record design decisions with rationale and dates.
+  - **Outcomes & Retrospective** — Space to capture lessons learned at milestones and completion.
+- Progress appears current rather than stale or obviously aspirational.
+- Readability issues are worth mentioning only when they create ambiguity, hide assumptions, or make execution materially harder.
 
 
 ## Output Format
 
-Present findings grouped by checklist section. Use severity levels to prioritize:
+Present findings grouped by checklist section. Lead with the issues most likely to make the plan a bad investment, unsafe, or technically misguided.
 
-- **BLOCKING**: The plan cannot be implemented as written. A developer would get stuck, make a wrong decision, or produce broken software. The plan must be revised before implementation.
-- **GAP**: Something important is missing or underspecified. A skilled developer might figure it out, but a novice or agent would struggle. Should be addressed.
-- **SUGGESTION**: An improvement that would make the plan clearer, more robust, or easier to follow. Nice to have.
+Use severity levels to prioritize:
+
+- **BLOCKING**: The plan should not be implemented as written. It is likely to fail, create avoidable risk, solve the wrong problem, or force the implementer into guesswork that materially changes the outcome.
+- **GAP**: Something important is missing or underspecified. A skilled developer might recover, but the plan is not yet trustworthy or complete.
+- **SUGGESTION**: An improvement that would make the plan clearer, safer, more proportionate, or easier to follow.
 
 ```markdown
 ## Plan Review: <plan title or filename>
 
 ### Summary
 
-<2-3 sentence overall assessment: Is this plan ready for implementation? What are the biggest risks?>
+<2-4 sentence overall assessment: Is this plan merely executable, or actually good? What are the biggest strategic or technical risks? Is there a simpler or safer direction?>
 
-### Self-Containment
-
-<findings or "No issues found.">
-
-### Task Granularity
+### Problem Framing and User Value
 
 <findings or "No issues found.">
 
-### Testing Guidance
+### Strategy and Architecture
 
 <findings or "No issues found.">
 
-### Design Principles
+### Risks, Failure Modes, and Safety
 
 <findings or "No issues found.">
 
-### Commit Discipline
+### Executability
 
 <findings or "No issues found.">
 
-### Milestones and Validation
+### Testing and Falsifiability
 
 <findings or "No issues found.">
 
-### Living Document Sections
+### Validation and Rollout
 
 <findings or "No issues found.">
 
-### Files, Paths, and Code References
-
-<findings or "No issues found.">
-
-### Clarity and Readability
+### Format Compliance
 
 <findings or "No issues found.">
 
@@ -170,27 +200,30 @@ Present findings grouped by checklist section. Use severity levels to prioritize
 
 **READY** | **REVISE** | **REWRITE**
 
-- **READY**: The plan can be handed to a developer or agent as-is.
-- **REVISE**: The plan has gaps but the structure is sound. Address the BLOCKING and GAP items.
-- **REWRITE**: The plan has fundamental problems — missing sections, wrong level of detail, or assumptions that make it unusable. Start over with the exec-plan skill.
+- **READY**: The plan is both sound and implementable as-is.
+- **REVISE**: The plan has real issues, but the core direction is plausible. Address the BLOCKING and GAP items before implementation.
+- **REWRITE**: The plan has fundamental problems — wrong framing, disproportionate design, missing safety story, or missing core sections. Start over with the exec-plan skill.
 
 ### Priority Fixes
 
-<Numbered list of the top 3-5 changes that would most improve the plan, starting with BLOCKING items.>
+<Numbered list of the top 3-5 changes that would most improve the plan, starting with the issues that change whether the plan should be executed at all.>
 ```
 
 Within each section, format individual findings as:
 
 ```markdown
 **[SEVERITY] Finding title**
-<Description of the issue — what's missing, what's wrong, why it matters.>
+<Description of the issue — what is missing, what seems wrong, why it matters, and what bad outcome it could produce if left unchanged.>
 <Concrete suggestion for how to fix it, with examples where helpful.>
 ```
+
+When appropriate, explicitly name the safer or simpler alternative you think the plan should consider.
 
 
 ## Handling Edge Cases
 
 - **Plan is not an ExecPlan**: If the document does not follow the ExecPlan format at all (no milestones, no progress section, no concrete steps), note this upfront and evaluate it against the spirit of the standard. Recommend converting to ExecPlan format.
 - **Plan is partially implemented**: Review the remaining work. Check that the Progress section accurately reflects what is done and what remains. Verify that completed milestones still make sense in context.
-- **Plan references prior plans**: Flag this as a self-containment issue. The relevant context from prior plans must be incorporated.
+- **Plan references prior plans**: Flag this as an executability issue. The relevant context from prior plans must be incorporated.
 - **Plan is very short**: Short is fine if the task is small. But even a small task needs file paths, test commands, expected outputs, and commit points. Brevity is not an excuse for vagueness.
+- **Plan may be executable but still poor**: Say so plainly. A plan can be detailed enough to follow and still be overengineered, risky, mis-scoped, or aimed at the wrong outcome. In that case, prioritize the strategic critique over the mechanical one.
