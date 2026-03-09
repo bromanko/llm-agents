@@ -66,6 +66,8 @@ export interface AgenticSessionResult {
     path: string;
     entries: Record<string, string[]>;
   }>;
+  /** Path to a debug file if the model response could not be parsed. */
+  debugPath?: string;
 }
 
 export interface PipelineResult {
@@ -143,6 +145,7 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
   let proposal: CommitProposal | undefined;
   let splitPlan: SplitCommitPlan | undefined;
   let changelogResults: AgenticSessionResult["changelogEntries"];
+  let agenticDebugPath: string | undefined;
 
   if (modelResult.model && ctx.runAgenticSession) {
     progress(`Planning commits with ${modelResult.model.name}...`);
@@ -165,6 +168,7 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
       proposal = agenticResult.proposal;
       splitPlan = agenticResult.splitPlan;
       changelogResults = agenticResult.changelogEntries;
+      agenticDebugPath = agenticResult.debugPath;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       warnings.push(`Agentic session failed: ${msg}. Using deterministic fallback.`);
@@ -178,6 +182,9 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
 
     if (modelResult.model) {
       if (ctx.runAgenticSession) {
+        const debugSuffix = agenticDebugPath
+          ? ` Debug output saved to ${agenticDebugPath}`
+          : "";
         warnings.push(
           `Model response could not be converted into a valid commit plan.${debugSuffix}`,
         );
