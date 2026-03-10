@@ -67,7 +67,7 @@ test("resolveCommitModel: returns null when both preferred and session model fai
   assert.equal(result.model, null);
   assert.ok(result.warnings.length >= 2);
   assert.ok(
-    result.warnings.some((w) => w.includes("deterministic fallback")),
+    result.warnings.some((w) => w.includes("no model available")),
   );
 });
 

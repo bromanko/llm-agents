@@ -2,9 +2,9 @@
  * Pipeline orchestration for jj-commit.
  *
  * This module coordinates:
- * 1. Model resolution (preferred Sonnet 4.6 → session → deterministic fallback)
+ * 1. Model resolution (preferred Sonnet 4.6 → session model)
  * 2. Optional jj absorb pre-pass
- * 3. Agentic commit analysis (or deterministic fallback)
+ * 3. Agentic commit analysis
  * 4. Changelog detection and application
  * 5. Commit execution (single or split)
  * 6. Optional bookmark + push
@@ -14,7 +14,6 @@ import type { ControlledJj } from "./jj.ts";
 import type { CommitCommandArgs, CommitProposal, SplitCommitPlan } from "./types.ts";
 import { resolveCommitModel } from "./model-resolver.ts";
 import type { ModelCandidate } from "./model-resolver.ts";
-import { generateFallbackProposal } from "./fallback.ts";
 import { formatCommitMessage } from "./message.ts";
 import { computeDependencyOrder, validateSplitPlan } from "./validation.ts";
 import { detectChangelogBoundaries, parseUnreleasedSection, applyChangelogEntries } from "./changelog.ts";
@@ -141,7 +140,7 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
     }
   }
 
-  // 5. Get proposal — agentic or fallback
+  // 5. Get proposal from agentic session
   let proposal: CommitProposal | undefined;
   let splitPlan: SplitCommitPlan | undefined;
   let changelogResults: AgenticSessionResult["changelogEntries"];
@@ -171,15 +170,12 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
       agenticDebugPath = agenticResult.debugPath;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      warnings.push(`Agentic session failed: ${msg}. Using deterministic fallback.`);
+      warnings.push(`Agentic session failed: ${msg}`);
     }
   }
 
-  // Deterministic fallback if no proposal
+  // If no proposal was produced, report failure instead of committing
   if (!proposal && !splitPlan) {
-    progress("Using deterministic fallback...");
-    proposal = generateFallbackProposal(changedFiles);
-
     if (modelResult.model) {
       if (ctx.runAgenticSession) {
         const debugSuffix = agenticDebugPath
@@ -189,11 +185,16 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
           `Model response could not be converted into a valid commit plan.${debugSuffix}`,
         );
       } else {
-        warnings.push("No agentic session runner available; using deterministic fallback.");
+        warnings.push("No agentic session runner available.");
       }
-    } else {
-      warnings.push(...proposal.warnings);
     }
+
+    return {
+      committed: false,
+      summary: "No commit proposal could be generated. Check model configuration and try again.",
+      warnings,
+      messages,
+    };
   }
 
   // Validate split plans before any changelog/file mutations or execution.
