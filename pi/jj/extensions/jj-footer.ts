@@ -7,6 +7,11 @@
  * - Lines added/removed in the working copy
  *
  * Everything else (tokens, cost, context %, model, etc.) stays the same.
+ *
+ * Performance note:
+ * The footer must never do blocking shell work during render().
+ * jj state is refreshed asynchronously in the background and render()
+ * only reads cached values.
  */
 
 import type { AssistantMessage } from "@mariozechner/pi-ai";
@@ -14,8 +19,9 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
 import {
-  detectWorkspaceName,
-  getJjInfo,
+  JJ_FOOTER_COMMANDS,
+  JJ_INFO_FIELD_SEPARATOR,
+  stripAnsi,
   type FooterSessionEntry,
   type JjInfo,
 } from "../lib/footer.ts";
@@ -48,6 +54,9 @@ const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
 const ANSI_CONTROL_SEQUENCE_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_OSC_SEQUENCE_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const UNSAFE_CONTROL_CHARS_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+const JJ_TIMEOUT_MS = 3000;
+const CACHE_MS = 5000;
+const WORKSPACE_STATE_ENTRY = "jj-workspace-state";
 
 interface SessionStats {
   totalInput: number;
@@ -56,6 +65,18 @@ interface SessionStats {
   totalCacheWrite: number;
   totalCost: number;
   contextTokens: number;
+}
+
+interface FooterCacheSnapshot {
+  jjInfo: JjInfo | null;
+  workspaceName: string | null;
+}
+
+interface FooterCacheController {
+  getSnapshot(): FooterCacheSnapshot;
+  attachRequestRender(requestRender: (() => void) | null): void;
+  scheduleRefresh(force?: boolean): void;
+  dispose(): void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,105 +189,248 @@ function computeSessionStats(entries: unknown[], branchEntries: unknown[]): Sess
   };
 }
 
+function getWorkspaceNameFromEntries(entries: FooterSessionEntry[]): string | null | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    const isWsEntry =
+      entry.customType === WORKSPACE_STATE_ENTRY
+      || entry.type === WORKSPACE_STATE_ENTRY;
+    if (!isWsEntry) continue;
+
+    const data = entry.data;
+    if (data === null || data === undefined) return null;
+    if (!isRecord(data)) return null;
+
+    const name = data.name;
+    return typeof name === "string" ? name : null;
+  }
+
+  return undefined;
+}
+
+function parseWorkspaceNameFromOutput(ourChangeId: string, workspaceListOutput: string): string | null {
+  let cursor = 0;
+  while (cursor <= workspaceListOutput.length) {
+    const nextNewline = workspaceListOutput.indexOf("\n", cursor);
+    const lineEnd = nextNewline === -1 ? workspaceListOutput.length : nextNewline;
+    const line = workspaceListOutput.slice(cursor, lineEnd).trim();
+
+    if (line) {
+      const sep = line.indexOf(":");
+      if (sep !== -1) {
+        const name = line.slice(0, sep);
+        const changeId = line.slice(sep + 1);
+        if (changeId === ourChangeId && name !== "default") {
+          return name;
+        }
+      }
+    }
+
+    if (nextNewline === -1) break;
+    cursor = nextNewline + 1;
+  }
+
+  return null;
+}
+
+function parseJjInfoFromOutput(logOutput: string, statOutput: string | null): JjInfo | null {
+  const parts = logOutput.trim().split(JJ_INFO_FIELD_SEPARATOR);
+  if (parts.length < 4) return null;
+
+  const uniquePrefix = parts[0] ?? "";
+  const fullShort = parts[1] ?? "";
+  const emptyFlag = parts[parts.length - 1] ?? "";
+  const description = parts.slice(2, -1).join(JJ_INFO_FIELD_SEPARATOR);
+
+  const rest = fullShort.startsWith(uniquePrefix)
+    ? fullShort.slice(uniquePrefix.length)
+    : fullShort;
+
+  let insertions = 0;
+  let deletions = 0;
+
+  if (statOutput) {
+    const trimmedStat = statOutput.trim();
+    const insertionMatch = trimmedStat.match(/(\d+) insertions?\(\+\)/);
+    const deletionMatch = trimmedStat.match(/(\d+) deletions?\(-\)/);
+
+    if (insertionMatch) {
+      insertions = parseInt(insertionMatch[1], 10);
+    }
+    if (deletionMatch) {
+      deletions = parseInt(deletionMatch[1], 10);
+    }
+  }
+
+  return {
+    uniquePrefix,
+    rest,
+    description: description || "",
+    empty: emptyFlag === "empty",
+    insertions,
+    deletions,
+  };
+}
+
 export default function(pi: ExtensionAPI) {
+  let footerCache: FooterCacheController | null = null;
+
+  async function runJj(cwd: string, args: readonly string[]): Promise<string | null> {
+    const result = await pi.exec("jj", [...args], {
+      cwd,
+      timeout: JJ_TIMEOUT_MS,
+    });
+
+    if (result.killed || result.code !== 0) return null;
+    return stripAnsi(result.stdout ?? "").trim();
+  }
+
+  async function fetchWorkspaceName(cwd: string, entries: FooterSessionEntry[]): Promise<string | null> {
+    const fromEntries = getWorkspaceNameFromEntries(entries);
+    if (fromEntries !== undefined) return fromEntries;
+
+    const ourChangeId = await runJj(cwd, JJ_FOOTER_COMMANDS.currentChangeId);
+    if (!ourChangeId) return null;
+
+    const workspaceList = await runJj(cwd, JJ_FOOTER_COMMANDS.workspaceList);
+    if (!workspaceList) return null;
+
+    return parseWorkspaceNameFromOutput(ourChangeId, workspaceList);
+  }
+
+  async function fetchJjInfo(cwd: string): Promise<JjInfo | null> {
+    const logOutput = await runJj(cwd, JJ_FOOTER_COMMANDS.infoLog);
+    if (!logOutput) return null;
+
+    const statOutput = await runJj(cwd, JJ_FOOTER_COMMANDS.diffStat);
+    return parseJjInfoFromOutput(logOutput, statOutput);
+  }
+
+  function createFooterCacheController(ctx: any): FooterCacheController {
+    let cachedJjInfo: JjInfo | null = null;
+    let cachedWsName: string | null = null;
+    let lastFetch = 0;
+    let refreshInFlight: Promise<void> | null = null;
+    let pendingForceRefresh = false;
+    let disposed = false;
+    let requestRender: (() => void) | null = null;
+    let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+    async function refresh(force = false): Promise<void> {
+      if (disposed) return;
+      if (!force && Date.now() - lastFetch < CACHE_MS) return;
+
+      if (refreshInFlight) {
+        pendingForceRefresh = pendingForceRefresh || force;
+        return refreshInFlight;
+      }
+
+      refreshInFlight = (async () => {
+        const entries = ctx.sessionManager
+          .getEntries()
+          .filter(isFooterSessionEntry);
+
+        const [jjInfo, wsName] = await Promise.all([
+          fetchJjInfo(ctx.cwd),
+          fetchWorkspaceName(ctx.cwd, entries),
+        ]);
+
+        if (disposed) return;
+
+        cachedJjInfo = jjInfo;
+        cachedWsName = wsName;
+        lastFetch = Date.now();
+        requestRender?.();
+      })().finally(() => {
+        refreshInFlight = null;
+
+        if (disposed) return;
+        if (!pendingForceRefresh) return;
+
+        const rerunForce = pendingForceRefresh;
+        pendingForceRefresh = false;
+        queueMicrotask(() => {
+          void refresh(rerunForce);
+        });
+      });
+
+      return refreshInFlight;
+    }
+
+    refreshTimer = setInterval(() => {
+      void refresh(false);
+    }, CACHE_MS);
+    refreshTimer.unref?.();
+
+    return {
+      getSnapshot() {
+        return {
+          jjInfo: cachedJjInfo,
+          workspaceName: cachedWsName,
+        };
+      },
+      attachRequestRender(nextRequestRender) {
+        requestRender = nextRequestRender;
+      },
+      scheduleRefresh(force = false) {
+        void refresh(force);
+      },
+      dispose() {
+        disposed = true;
+        requestRender = null;
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+      },
+    };
+  }
+
+  function refreshFooter(force = false): void {
+    footerCache?.scheduleRefresh(force);
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
     if (!isJjRepo(ctx.cwd)) return;
 
-    ctx.ui.setFooter((_tui, theme, footerData) => {
-      // Poll for jj changes periodically
-      let cachedJjInfo: JjInfo | null = null;
-      let cachedWsName: string | null = null;
-      let lastFetch = 0;
-      const CACHE_MS = 3000;
+    footerCache?.dispose();
+    footerCache = createFooterCacheController(ctx);
+    refreshFooter(true);
 
-      let cachedSessionStats: SessionStats | null = null;
-      let cachedEntriesLength = -1;
-      let cachedLastEntry: unknown = undefined;
-      let cachedBranchLength = -1;
-      let cachedLastBranchEntry: unknown = undefined;
-
-      function refreshCache() {
-        cachedJjInfo = getJjInfo(ctx.cwd);
-
-        const entries = ctx.sessionManager
-          .getEntries()
-          .filter(isFooterSessionEntry);
-        cachedWsName = detectWorkspaceName(ctx.cwd, entries);
-
-        lastFetch = Date.now();
-      }
-
-      function ensureCache() {
-        if (Date.now() - lastFetch > CACHE_MS) {
-          refreshCache();
-        }
-      }
-
-      function getInfo(): JjInfo | null {
-        ensureCache();
-        return cachedJjInfo;
-      }
-
-      function getWsName(): string | null {
-        ensureCache();
-        return cachedWsName;
-      }
-
-      function getSessionStats(): SessionStats {
-        const entries = ctx.sessionManager.getEntries();
-        const branchEntries = ctx.sessionManager.getBranch();
-
-        const entriesLength = entries.length;
-        const branchLength = branchEntries.length;
-        const lastEntry = entriesLength > 0 ? entries[entriesLength - 1] : undefined;
-        const lastBranchEntry = branchLength > 0 ? branchEntries[branchLength - 1] : undefined;
-
-        const isCacheHit =
-          cachedSessionStats !== null
-          && cachedEntriesLength === entriesLength
-          && cachedLastEntry === lastEntry
-          && cachedBranchLength === branchLength
-          && cachedLastBranchEntry === lastBranchEntry;
-
-        if (isCacheHit) {
-          return cachedSessionStats;
-        }
-
-        cachedSessionStats = computeSessionStats(entries, branchEntries);
-        cachedEntriesLength = entriesLength;
-        cachedLastEntry = lastEntry;
-        cachedBranchLength = branchLength;
-        cachedLastBranchEntry = lastBranchEntry;
-
-        return cachedSessionStats;
-      }
+    ctx.ui.setFooter((tui, theme, footerData) => {
+      footerCache?.attachRequestRender(() => tui.requestRender());
+      const unsubscribeBranch = footerData.onBranchChange(() => {
+        refreshFooter(true);
+        tui.requestRender();
+      });
 
       return {
-        invalidate() {
-          lastFetch = 0; // Force refresh on next render
-          cachedSessionStats = null;
-          cachedEntriesLength = -1;
-          cachedLastEntry = undefined;
-          cachedBranchLength = -1;
-          cachedLastBranchEntry = undefined;
+        dispose() {
+          unsubscribeBranch();
+          footerCache?.attachRequestRender(null);
         },
+        invalidate() { },
         render(width: number): string[] {
           // --- Line 1: cwd + jj info ---
-          let pwd = process.cwd();
+          let pwd = ctx.cwd;
           const home = process.env.HOME || process.env.USERPROFILE;
           if (home && pwd.startsWith(home)) {
             pwd = `~${pwd.slice(home.length)}`;
           }
 
+          const snapshot = footerCache?.getSnapshot() ?? {
+            jjInfo: null,
+            workspaceName: null,
+          };
+
           // Workspace indicator (yellow, between cwd and change ID)
-          const wsName = getWsName();
-          const safeWsName = wsName ? sanitizeFooterText(wsName) : "";
+          const safeWsName = snapshot.workspaceName ? sanitizeFooterText(snapshot.workspaceName) : "";
           if (safeWsName) {
             pwd += " " + theme.fg("warning", `⎇ ${safeWsName}`);
           }
 
-          const jj = getInfo();
+          const jj = snapshot.jjInfo;
           if (jj) {
             // Style change ID like jj log: unique prefix highlighted, rest dimmed
             const changeId =
@@ -297,7 +461,7 @@ export default function(pi: ExtensionAPI) {
 
             pwd = `${pwd} ${jjParts}`;
           } else {
-            // Fall back to git branch if not a jj repo or jj failed
+            // Fall back to git branch if not a jj repo or refresh failed
             const branch = footerData.getGitBranch();
             if (branch) {
               pwd = `${pwd} (${branch})`;
@@ -312,7 +476,10 @@ export default function(pi: ExtensionAPI) {
           }
 
           // --- Line 2: token stats + model (replicate default behavior) ---
-          const sessionStats = getSessionStats();
+          const sessionStats = computeSessionStats(
+            ctx.sessionManager.getEntries(),
+            ctx.sessionManager.getBranch(),
+          );
           const {
             totalInput,
             totalOutput,
@@ -388,7 +555,7 @@ export default function(pi: ExtensionAPI) {
 
           const lines = [
             truncateToWidth(theme.fg("dim", pwd), width),
-            statsLine,
+            truncateToWidth(statsLine, width, theme.fg("dim", "...")),
           ];
 
           // Extension statuses
@@ -410,5 +577,33 @@ export default function(pi: ExtensionAPI) {
         },
       };
     });
+  });
+
+  pi.on("tool_result", async (event) => {
+    if (!footerCache) return;
+    if (event.toolName === "edit" || event.toolName === "write" || event.toolName === "bash") {
+      refreshFooter(true);
+    }
+  });
+
+  pi.on("agent_end", async () => {
+    refreshFooter(true);
+  });
+
+  pi.on("session_switch", async () => {
+    refreshFooter(true);
+  });
+
+  pi.on("session_fork", async () => {
+    refreshFooter(true);
+  });
+
+  pi.on("session_tree", async () => {
+    refreshFooter(true);
+  });
+
+  pi.on("session_shutdown", async () => {
+    footerCache?.dispose();
+    footerCache = null;
   });
 }

@@ -586,7 +586,7 @@ test("runModelInference: swallows API errors, logs debug context, and returns nu
   assert.ok(debugMeta);
   assert.equal(debugMeta.provider, model.provider);
   assert.equal(debugMeta.modelId, model.id);
-  assert.ok(debugMeta.err instanceof Error);
-  assert.equal(debugMeta.err.message, "completion failed");
+  assert.equal(typeof debugMeta.error, "string");
+  assert.equal(debugMeta.error, "completion failed");
 });
 

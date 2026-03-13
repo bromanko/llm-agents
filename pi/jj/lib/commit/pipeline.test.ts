@@ -79,13 +79,12 @@ test("pipeline: reports nothing to commit when no changed files", async () => {
   assert.ok(result.summary.includes("Nothing to commit"));
 });
 
-test("pipeline: uses deterministic fallback when no model available", async () => {
+test("pipeline: fails gracefully when no model available", async () => {
   const jj = createMockJj({ changedFiles: ["src/main.ts"], diff: "diff", stat: "stat" });
   const ctx = createBasicContext({ jj: jj as any });
   const result = await runCommitPipeline(ctx);
-  assert.equal(result.committed, true);
-  assert.ok(result.messages.length > 0);
-  assert.ok(result.warnings.some((w) => w.includes("fallback")));
+  assert.equal(result.committed, false);
+  assert.ok(result.summary.includes("No commit proposal could be generated"));
 });
 
 test("pipeline: does not fetch diff/stat when agentic analysis is not used", async () => {
@@ -120,6 +119,19 @@ test("pipeline: dry-run does not commit", async () => {
   const ctx = createBasicContext({
     jj: jj as any,
     args: { dryRun: true, push: false, noChangelog: true, noAbsorb: false },
+    availableModels: [sessionModel],
+    sessionModel,
+    hasApiKey: async () => true,
+    runAgenticSession: async () => ({
+      proposal: {
+        type: "chore" as const,
+        scope: null,
+        summary: "updated files",
+        details: [],
+        issueRefs: [],
+        warnings: [],
+      },
+    }),
   });
   const result = await runCommitPipeline(ctx);
   assert.equal(result.committed, false);
@@ -243,7 +255,7 @@ test("pipeline: fetches diff/stat only when running agentic session", async () =
   assert.equal(statCalls, 1);
 });
 
-test("pipeline: falls back to deterministic on agentic failure", async () => {
+test("pipeline: fails gracefully on agentic session error", async () => {
   const jj = createMockJj({ changedFiles: ["src/main.ts"], diff: "diff", stat: "stat" });
   const ctx = createBasicContext({
     jj: jj as any,
@@ -256,8 +268,9 @@ test("pipeline: falls back to deterministic on agentic failure", async () => {
   });
 
   const result = await runCommitPipeline(ctx);
-  assert.equal(result.committed, true);
+  assert.equal(result.committed, false);
   assert.ok(result.warnings.some((w) => w.includes("Agentic session failed")));
+  assert.ok(result.summary.includes("No commit proposal could be generated"));
 });
 
 test("pipeline: warns when model returns no usable proposal", async () => {
@@ -272,11 +285,11 @@ test("pipeline: warns when model returns no usable proposal", async () => {
 
   const result = await runCommitPipeline(ctx);
 
-  assert.equal(result.committed, true);
+  assert.equal(result.committed, false);
   assert.ok(
     result.warnings.some((w) => w.includes("could not be converted into a valid commit plan")),
   );
-  assert.ok(result.warnings.every((w) => !w.includes("no model available")));
+  assert.ok(result.summary.includes("No commit proposal could be generated"));
 });
 
 test("pipeline: warns when model available but no agentic session runner", async () => {
@@ -291,10 +304,11 @@ test("pipeline: warns when model available but no agentic session runner", async
 
   const result = await runCommitPipeline(ctx);
 
-  assert.equal(result.committed, true);
+  assert.equal(result.committed, false);
   assert.ok(
     result.warnings.some((w) => w.includes("No agentic session runner available")),
   );
+  assert.ok(result.summary.includes("No commit proposal could be generated"));
 });
 
 test("pipeline: executes split commits in dependency order", async () => {
@@ -639,7 +653,7 @@ test("pipeline: writes changelog updates and reports progress", async () => {
   }
 });
 
-test("pipeline: model fallback warning is included", async () => {
+test("pipeline: model resolution failure warning is included", async () => {
   const jj = createMockJj({ changedFiles: ["src/main.ts"], diff: "diff", stat: "stat" });
   const ctx = createBasicContext({
     jj: jj as any,
@@ -649,6 +663,7 @@ test("pipeline: model fallback warning is included", async () => {
   });
 
   const result = await runCommitPipeline(ctx);
+  assert.equal(result.committed, false);
   assert.ok(result.warnings.some((w) => w.includes("not found in registry")));
 });
 

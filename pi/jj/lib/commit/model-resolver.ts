@@ -3,7 +3,7 @@
  *
  * Preferred model: Sonnet 4.6 (anthropic/claude-sonnet-4-6-*)
  * Fallback: current session model
- * Final fallback: null (caller uses deterministic path)
+ * Final: null (caller reports failure)
  */
 
 export interface ModelCandidate {
@@ -67,7 +67,7 @@ export async function resolveCommitModel(
     warnings.push("No session model available.");
   }
 
-  // Final fallback: null (deterministic path)
-  warnings.push("All model resolution paths failed; using deterministic fallback.");
+  // Final: no model available
+  warnings.push("All model resolution paths failed; no model available to generate commit messages.");
   return { model: null, warnings };
 }
