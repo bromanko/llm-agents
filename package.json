@@ -15,6 +15,7 @@
   },
   "pi": {
     "extensions": [
+      "./pi/chrome-devtools-mcp/extensions",
       "./pi/ci-guard/extensions",
       "./pi/code-review/extensions",
       "./pi/jj/extensions",
