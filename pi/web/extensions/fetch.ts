@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { truncateToWidth } from "@mariozechner/pi-tui";
 import { fetchUrl, type FetchRequest, type FetchResponse } from "../lib/fetch-core.ts";
 
 export interface FetchToolParams {
@@ -86,8 +87,8 @@ interface ToolComponent {
 
 function renderAsSimpleComponent(text: string): ToolComponent {
   return {
-    render(_width: number): string[] {
-      return text.split("\n");
+    render(width: number): string[] {
+      return text.split("\n").map((line) => truncateToWidth(line, width));
     },
     invalidate() { },
   };

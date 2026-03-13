@@ -410,13 +410,16 @@ function renderFileWidget(width: number, theme: Theme): string[] {
 
 	const headerLeft = theme.fg("accent", ` ${fileName} `) + theme.fg("dim", `${dirName}`);
 	const headerRight = theme.fg("dim", `${lineRange} (${scrollPct}) `);
-	const headerFill = Math.max(0, width - visibleWidth(headerLeft) - visibleWidth(headerRight) - 2);
+	const headerContentWidth = Math.max(0, width - 2);
+	const headerContent = visibleWidth(headerLeft) + visibleWidth(headerRight) <= headerContentWidth
+		? headerLeft +
+			theme.fg("border", "─".repeat(headerContentWidth - visibleWidth(headerLeft) - visibleWidth(headerRight))) +
+			headerRight
+		: truncateToWidth(`${headerLeft} ${headerRight}`, headerContentWidth);
 
 	lines.push(
 		theme.fg("border", "┌") +
-		headerLeft +
-		theme.fg("border", "─".repeat(headerFill)) +
-		headerRight +
+		padLine(headerContent, headerContentWidth, theme) +
 		theme.fg("border", "┐"),
 	);
 
@@ -441,11 +444,13 @@ function renderFileWidget(width: number, theme: Theme): string[] {
 
 	// Bottom border with scroll hints
 	const hint = theme.fg("dim", ` Ctrl+Shift+↑↓: scroll │ F2: resize │ /goto <line> │ /live-edit-close `);
-	const hintFill = Math.max(0, width - visibleWidth(hint) - 2);
+	const hintContentWidth = Math.max(0, width - 2);
+	const hintContent = visibleWidth(hint) <= hintContentWidth
+		? hint + theme.fg("border", "─".repeat(hintContentWidth - visibleWidth(hint)))
+		: truncateToWidth(hint, hintContentWidth);
 	lines.push(
 		theme.fg("border", "└") +
-		hint +
-		theme.fg("border", "─".repeat(hintFill)) +
+		padLine(hintContent, hintContentWidth, theme) +
 		theme.fg("border", "┘"),
 	);
 
