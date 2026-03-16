@@ -144,6 +144,23 @@ export class ControlledJj {
   }
 
   /**
+   * Check whether other workspaces exist in this repository.
+   * Returns true if there are 2+ workspaces (i.e. at least one besides the current one).
+   * Used to guard operations like `jj absorb` that rewrite ancestor commits
+   * and can cause divergent commits across workspaces.
+   */
+  async hasOtherWorkspaces(): Promise<boolean> {
+    try {
+      const { stdout } = await runJj(this.cwd, ["workspace", "list"]);
+      const lines = stdout.split("\n").filter((l) => l.trim().length > 0);
+      return lines.length > 1;
+    } catch {
+      // If workspace list fails, assume single workspace (safe default)
+      return false;
+    }
+  }
+
+  /**
    * Create a commit from the working copy.
    * If files are specified, only those files are included.
    * Important: `jj commit` without file args commits ALL working-copy changes.
