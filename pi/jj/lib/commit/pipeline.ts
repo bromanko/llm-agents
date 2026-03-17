@@ -99,24 +99,45 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
 
   // 2. Optional absorb pre-pass
   if (!args.noAbsorb) {
-    progress("Running jj absorb...");
+    // Guard: absorb rewrites ancestor commits, which causes divergent commits
+    // when other workspaces share those ancestors. Skip absorb if other
+    // workspaces exist.
+    let absorbSafe = true;
     try {
-      const absorbResult = await jj.absorb();
-      if (absorbResult.changed) {
-        progress(`Absorb applied: ${absorbResult.output}`);
-        // Re-check changed files after absorb
-        changedFiles = await jj.getChangedFiles();
-        if (changedFiles.length === 0) {
-          return {
-            committed: false,
-            summary: "All changes were absorbed into ancestor commits.",
-            warnings,
-            messages,
-          };
-        }
+      const hasOthers = await jj.hasOtherWorkspaces();
+      if (hasOthers) {
+        absorbSafe = false;
+        warnings.push(
+          "Skipping jj absorb: other workspaces detected. " +
+          "Absorb rewrites ancestor commits which causes divergent commits across workspaces.",
+        );
       }
     } catch {
-      warnings.push("jj absorb failed; continuing without absorb.");
+      // If we can't check, proceed cautiously — skip absorb
+      absorbSafe = false;
+      warnings.push("Could not check for other workspaces; skipping absorb to be safe.");
+    }
+
+    if (absorbSafe) {
+      progress("Running jj absorb...");
+      try {
+        const absorbResult = await jj.absorb();
+        if (absorbResult.changed) {
+          progress(`Absorb applied: ${absorbResult.output}`);
+          // Re-check changed files after absorb
+          changedFiles = await jj.getChangedFiles();
+          if (changedFiles.length === 0) {
+            return {
+              committed: false,
+              summary: "All changes were absorbed into ancestor commits.",
+              warnings,
+              messages,
+            };
+          }
+        }
+      } catch {
+        warnings.push("jj absorb failed; continuing without absorb.");
+      }
     }
   }
 

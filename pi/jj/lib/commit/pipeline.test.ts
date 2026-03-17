@@ -17,6 +17,7 @@ interface MockJjOptions {
   diff?: string;
   stat?: string;
   absorbResult?: { changed: boolean; output: string };
+  hasOtherWorkspaces?: boolean;
   commitLog?: string[][];
   bookmarkCalls?: string[][];
   pushCalls?: string[];
@@ -34,6 +35,7 @@ function createMockJj(opts: MockJjOptions = {}) {
     getHunks: async () => [],
     getRecentCommits: async () => [],
     absorb: async () => opts.absorbResult ?? { changed: false, output: "" },
+    hasOtherWorkspaces: async () => opts.hasOtherWorkspaces ?? false,
     commit: async (message: string, files?: string[]) => {
       commitLog.push([message, ...(files ?? [])]);
     },
@@ -187,6 +189,25 @@ test("pipeline: all changes absorbed means nothing left to commit", async () => 
   const result = await runCommitPipeline(ctx);
   assert.equal(result.committed, false);
   assert.ok(result.summary.includes("absorbed"));
+});
+
+test("pipeline: skips absorb when other workspaces exist", async () => {
+  let absorbCalled = false;
+  const jj = createMockJj({
+    changedFiles: ["src/main.ts"],
+    diff: "diff",
+    stat: "stat",
+    hasOtherWorkspaces: true,
+  });
+  jj.absorb = async () => {
+    absorbCalled = true;
+    return { changed: false, output: "" };
+  };
+
+  const ctx = createBasicContext({ jj: jj as any });
+  const result = await runCommitPipeline(ctx);
+  assert.ok(!absorbCalled, "absorb should not have been called when other workspaces exist");
+  assert.ok(result.warnings.some((w) => w.includes("other workspaces detected")));
 });
 
 test("pipeline: uses agentic session when model and session available", async () => {
