@@ -101,6 +101,14 @@ If you cannot answer these, keep researching before writing the final plan.
 
 **Capture evidence.** When steps produce terminal output, short diffs, or logs, include them as indented examples. Keep them concise and focused on what proves success. If you need to include a patch, prefer file-scoped diffs or small excerpts that a reader can recreate by following the instructions rather than pasting large blobs.
 
+**Fact-check the current tree before you freeze the plan.** Re-read every file, script, config, dependency, and export the plan names. Verify file paths, function names, package names, test commands, line numbers, and current behavior against the repository as it exists now. Do not copy stale facts from earlier drafts, prior plans, or memory. If a fact may drift while the plan is being revised, call it out explicitly and explain how the implementer should detect and normalize that drift.
+
+**Make prerequisites first-class.** If the plan depends on prior work, package installs, config changes, generated files, environment variables, or another repository being checked out, say so explicitly near the top of the plan. Do not say "after Plan D" and leave it there. Restate the exact repository facts the implementer needs now: which files must already exist, what interfaces they expose, what commands must work, and what normalization step to take if the repo differs.
+
+**Inventory scope for migrations and extractions.** When the plan moves code across packages, extracts shared modules, or replaces an existing path, account for every affected surface. Name the files, routes, commands, or UI behaviors that will move, stay local, split, or be deferred. If the plan claims a directory will be emptied or a legacy path removed, verify every current file in that area and say where each one ends up. If a user-visible surface survives the migration, specify exactly how parity will be preserved and tested.
+
+**Close every design choice the implementer would otherwise have to make.** Resolve exact module locations, type names, dependency additions, config changes, lifecycle rules, ID generation strategy, conflict policy, retry behavior, and fallback semantics in the plan. Phrases such as "wire up", "plumb through", "choose one", "as needed", or "decide whether" usually mean the plan is still underspecified.
+
 ### Milestones
 
 Milestones are narrative, not bureaucracy. If you break the work into milestones, introduce each with a brief paragraph that describes the scope, what will exist at the end of the milestone that did not exist before, the commands to run, and the acceptance you expect to observe. Keep it readable as a story: goal, work, result, proof. Progress and milestones are distinct: milestones tell the story, progress tracks granular work. Both must exist.
@@ -121,6 +129,8 @@ Where applicable, steps follow the TDD cycle:
 
 Each step must name the exact file(s) to touch, with full repository-relative paths. Each step must describe what to add, change, or remove concretely — not "update the handler" but "in `src/handlers/auth.ts`, add a new function `validateToken` that takes a `string` and returns a `Result<Claims, AuthError>`." Steps that produce output (running tests, starting a server, making a request) must include the expected output so the developer can tell success from failure.
 
+As a rule of thumb, any step that touches multiple files, mixes config changes with code changes, or would take more than 5 minutes should be split. Extraction and migration work usually needs explicit substeps for dependency installation, scaffolding, wiring, targeted tests, full-suite validation, and commit. Large steps are one of the most common avoidable causes of plan-review feedback.
+
 No step should require the developer to make a design decision. If a decision is needed, the plan makes it and explains why. No step should bundle multiple unrelated changes. "Add the type and write the test and update the config" is three steps, not one.
 
 ### Testing and Falsifiability
@@ -130,6 +140,8 @@ Assume the developer will not invent good tests on their own. The plan must spec
 Every new behavior needs at least one test specified in the plan — not "write tests for this" but "write a test that calls `parse("")` and asserts it returns `Err(EmptyInput)`." Edge cases and negative cases must be called out explicitly. The developer should not have to think about what the edge cases are; enumerate them.
 
 Name test file locations with full paths. State the test runner command, including how to run a single test or a subset. Describe expected test output (pass/fail counts, specific assertion messages) so the developer knows what "working" looks like. When a test should fail before implementation (the red phase of TDD), say so and describe what the failure looks like. Include integration or end-to-end validation steps where appropriate — not just unit tests.
+
+For every new or modified test file, specify the fixture or setup data, the exact function, route, or UI path to exercise, the concrete inputs, and the assertion values. For UI tests, name the DOM queries and expected text or attributes. For protocol or transport tests, name the exact messages, close codes, rejection reasons, or lifecycle ordering being verified. For migrations and extractions, add parity tests for every retained user-visible surface — routes, CLI commands, exports, diagnostics, and demo flows — so the plan can catch a half-migrated system that still passes lower-level unit tests.
 
 If the plan makes non-functional claims such as performance, resilience, safety, or security improvement, include a concrete way to falsify those claims. For example, say what baseline to compare against, what command or scenario to run, what regression would count as failure, and how the result will be observed.
 
@@ -146,6 +158,8 @@ Guide the developer toward clean, maintainable code:
 ### Commit Discipline
 
 The plan must produce a clean, readable commit history. Call out commit points explicitly so the developer never has to wonder when to commit. Each commit should represent a logical, self-contained unit of progress — a passing test, a completed refactor step, a new function with its tests. The system must be in a working state (tests pass) at every commit point. Do not instruct the developer to commit broken intermediate states.
+
+For any plan larger than a tiny one-file change, include a short commit map in the plan itself: after which step or milestone the tree should be green, what logical unit lands in that commit, and what validation must pass first.
 
 Where helpful, suggest commit messages or describe what the commit contains clearly enough that writing a good message is obvious.
 
@@ -240,6 +254,21 @@ Describe the current state relevant to this task as if the reader knows nothing.
 the key files and modules by full path. Define any non-obvious term you will use. Do
 not refer to prior plans.
 
+## Preconditions and Verified Facts
+
+State the repository facts this plan depends on after checking the current tree:
+existing files, exported symbols, scripts, package dependencies, config settings,
+generated artifacts, and any other repository or environment preconditions. If the
+plan depends on earlier work, restate the needed facts here instead of referring to the
+earlier plan.
+
+## Scope Boundaries
+
+State what is in scope, what stays unchanged, what moves, what is split, and what is
+explicitly deferred. For extractions or migrations, account for every currently
+relevant file, route, command, or UI surface so the implementer does not have to infer
+the boundary.
+
 ## Milestones
 
 Describe each milestone in prose. For each one, say what will exist at the end, how to
@@ -249,26 +278,34 @@ observe it working, and why this milestone comes in this order.
 
 Describe, in prose, the sequence of edits and additions. For each edit, name the file
 and location (function, module) and what to insert or change. Keep it concrete and
-minimal.
+minimal. If code is being moved or split, name the source path, destination path, and
+what remains behind.
 
 ## Concrete Steps
 
 State the exact commands to run and where to run them (working directory). When a
 command generates output, show a short expected transcript so the reader can compare.
-This section must be updated as work proceeds.
+Include dependency-installation, config, and setup steps before code changes when they
+are required. Call out commit points explicitly alongside the step sequence. This
+section must be updated as work proceeds.
 
 ## Testing and Falsifiability
 
 State exactly what tests to add or modify, where they live, how to run them, what will
-fail before implementation, and what will pass after. If the plan makes non-functional
-claims, state how those claims will be disproved if they are false.
+fail before implementation, and what will pass after. Name the fixtures, inputs,
+assertions, and expected failure or success messages. If the plan is a migration or
+extraction, include parity tests for every retained user-visible surface. If the plan
+makes non-functional claims, state how those claims will be disproved if they are
+false.
 
 ## Validation and Acceptance
 
 Describe how to start or exercise the system and what to observe. Phrase acceptance as
 behavior, with specific inputs and outputs. If tests are involved, say "run <test
 command> and expect <N> passed; the new test <name> fails before the change and passes
-after."
+after." For migrations, extractions, or replacements, include validation for the
+retained routes, commands, exports, diagnostics, or UI flows that prove nothing
+important regressed.
 
 ## Rollout, Recovery, and Idempotence
 
@@ -284,9 +321,10 @@ them concise and focused on what proves success.
 
 ## Interfaces and Dependencies
 
-Be prescriptive. Name the libraries, modules, and services to use and why. Specify the
-types, traits/interfaces, and function signatures that must exist at the end of the
-milestone. Prefer stable names and paths. E.g.:
+Be prescriptive. Name the libraries, modules, services, package installs, config
+changes, generated artifacts, and multi-repo or environment assumptions to use and
+why. Specify the types, traits/interfaces, and function signatures that must exist at
+the end of the milestone. Prefer stable names and paths. E.g.:
 
 In src/planner.ts, define:
 
