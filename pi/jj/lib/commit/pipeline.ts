@@ -197,6 +197,15 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
 
   // If no proposal was produced, report failure instead of committing
   if (!proposal && !splitPlan) {
+    if (!modelResult.model) {
+      return {
+        committed: false,
+        summary: "No model available — check that you are logged in and have a valid API key configured.",
+        warnings,
+        messages,
+      };
+    }
+
     if (modelResult.model) {
       if (ctx.runAgenticSession) {
         const debugSuffix = agenticDebugPath
