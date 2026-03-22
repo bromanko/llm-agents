@@ -7,8 +7,25 @@
 1. switches the session into design-facilitator mode
 2. gathers a structured brief through normal chat
 3. asks the user for approval when the brief is sufficient
-4. runs an unattended two-model debate
-5. offers to save the final design doc to `docs/designs/`
+4. saves the brief to `docs/designs/` before starting the debate
+5. runs an unattended two-model debate
+6. offers to update the saved file with the final design doc
+
+## Commands
+
+### `/design <topic>`
+
+Full workflow: intake → brief → debate → save.
+
+### `/design-debate <path-to-brief.md>`
+
+Skip intake and run the debate directly from an existing brief file. The file
+content is used as-is for the architect prompts. The final design document
+overwrites the source file (with confirmation).
+
+### `/design-cancel`
+
+Cancel the active design workflow.
 
 ## Configuration
 
