@@ -22,7 +22,8 @@
       "./pi/live-edit/extensions",
       "./pi/lsp/extensions",
       "./pi/tmux-titles/extensions",
-      "./pi/web/extensions"
+      "./pi/web/extensions",
+      "./pi/http-bridge/extensions"
     ],
     "skills": [
       "./skills"
