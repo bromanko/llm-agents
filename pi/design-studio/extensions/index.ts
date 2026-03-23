@@ -6,11 +6,15 @@ import * as path from "node:path";
 import { StringEnum } from "@mariozechner/pi-ai";
 import {
   getMarkdownTheme,
+  type AgentToolUpdateCallback,
+  type BeforeAgentStartEvent,
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
+  type InputEvent,
+  type Theme,
 } from "@mariozechner/pi-coding-agent";
-import { Markdown, Text } from "@mariozechner/pi-tui";
+import { Markdown, Text } from "../../lib/tui-shim.ts";
 import { Type } from "@sinclair/typebox";
 
 import {
@@ -59,6 +63,16 @@ interface DesignState {
   summary?: string;
   lastCheckpointAction?: "ask_user" | "request_phase_approval" | "start_debate" | "hold";
   previousSessionModel?: PreviousSessionModel;
+  savePath?: string;
+  rawBriefMarkdown?: string;
+}
+
+interface DesignCheckpointParams {
+  sufficientInfo: boolean;
+  nextAction: "ask_user" | "request_phase_approval" | "start_debate" | "hold";
+  summary?: string;
+  missingInfo?: string[];
+  brief?: Partial<DesignBrief>;
 }
 
 interface DebateResult {
@@ -259,6 +273,8 @@ function sanitizeStateForPersistence(state: DesignState) {
     summary: state.summary,
     lastCheckpointAction: state.lastCheckpointAction,
     previousSessionModel: state.previousSessionModel,
+    savePath: state.savePath,
+    rawBriefMarkdown: state.rawBriefMarkdown,
   };
 }
 
@@ -294,8 +310,15 @@ async function applyRole(pi: ExtensionAPI, ctx: ExtensionContext, role: Normaliz
   if (role.thinkingLevel) pi.setThinkingLevel(role.thinkingLevel);
 }
 
+const WORKING_DIR = path.join(os.homedir(), ".pi", "agent", "designs");
+
 function savePathForTopic(cwd: string, profile: NormalizedProfile, topic: string): string {
   return nextAvailableSavePath(path.resolve(cwd, profile.saveDir), topic);
+}
+
+function workingPathForTopic(topic: string): string {
+  fs.mkdirSync(WORKING_DIR, { recursive: true });
+  return nextAvailableSavePath(WORKING_DIR, topic);
 }
 
 function extractAssistantText(message: unknown): string {
@@ -309,22 +332,14 @@ function extractAssistantText(message: unknown): string {
     .trim();
 }
 
-function writePromptToTempFile(roleName: string, prompt: string): { dir: string; filePath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-design-studio-"));
-  const filePath = path.join(dir, `${roleName.replace(/[^a-z0-9-]+/gi, "_")}.md`);
-  fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-  return { dir, filePath };
-}
-
 async function runPiSubprocess(params: {
   roleName: string;
   model: NormalizedModelRef;
   systemPrompt: string;
   task: string;
   cwd: string;
-  onChunk?: (text: string) => void;
+  onStreamingUpdate?: (text: string, isThinking: boolean) => void;
 }): Promise<DebateResult> {
-  const promptFile = writePromptToTempFile(params.roleName, params.systemPrompt);
   const modelArg = formatModelRef(params.model);
   const args = [
     "--mode",
@@ -334,7 +349,7 @@ async function runPiSubprocess(params: {
     "--model",
     modelArg,
     "--append-system-prompt",
-    promptFile.filePath,
+    params.systemPrompt,
     params.task,
   ];
 
@@ -348,6 +363,10 @@ async function runPiSubprocess(params: {
     let stdoutBuffer = "";
     let stderr = "";
     let finalOutput = "";
+    let streamingText = "";
+    let thinkingText = "";
+    let modelError = "";
+    let isThinking = false;
 
     const processLine = (line: string) => {
       if (!line.trim()) return;
@@ -357,42 +376,56 @@ async function runPiSubprocess(params: {
       } catch {
         return;
       }
-      if (event.type === "message_end" && event.message?.role === "assistant") {
+      const eventType = event.type === "message_update" ? event.assistantMessageEvent?.type : event.type;
+      if (eventType === "thinking_start") {
+        isThinking = true;
+        thinkingText = "";
+      } else if (eventType === "thinking_delta") {
+        const delta = event.assistantMessageEvent?.delta;
+        if (typeof delta === "string") {
+          thinkingText += delta;
+          params.onStreamingUpdate?.(thinkingText, true);
+        }
+      } else if (eventType === "thinking_end") {
+        isThinking = false;
+      } else if (eventType === "text_delta") {
+        const delta = event.assistantMessageEvent?.delta;
+        if (typeof delta === "string") {
+          streamingText += delta;
+          params.onStreamingUpdate?.(streamingText, false);
+        }
+      } else if (event.type === "message_end" && event.message?.role === "assistant") {
+        if (event.message.errorMessage) {
+          modelError = String(event.message.errorMessage).trim();
+        }
         const text = extractAssistantText(event.message);
         if (text) {
           finalOutput = text;
-          params.onChunk?.(text);
         }
       }
     };
 
-    proc.stdout.on("data", (data) => {
+    proc.stdout.on("data", (data: { toString(): string }) => {
       stdoutBuffer += data.toString();
       const lines = stdoutBuffer.split("\n");
       stdoutBuffer = lines.pop() || "";
       for (const line of lines) processLine(line);
     });
 
-    proc.stderr.on("data", (data) => {
+    proc.stderr.on("data", (data: { toString(): string }) => {
       stderr += data.toString();
     });
 
-    proc.on("close", (code) => {
+    proc.on("close", (code: number | null) => {
       if (stdoutBuffer.trim()) processLine(stdoutBuffer);
-      try {
-        fs.unlinkSync(promptFile.filePath);
-      } catch {
-        // Ignore cleanup errors.
-      }
-      try {
-        fs.rmdirSync(promptFile.dir);
-      } catch {
-        // Ignore cleanup errors.
-      }
-      resolve({ output: finalOutput, stderr, exitCode: code ?? 1 });
+      const output = finalOutput || streamingText;
+      const combinedStderr = [stderr, modelError].filter(Boolean).join("\n").trim();
+      // Force failure if model errored with no output but process exited 0
+      const exitCode = (!output && modelError && code === 0) ? 1 : (code ?? 1);
+      resolve({ output, stderr: combinedStderr, exitCode });
     });
 
-    proc.on("error", (error) => {
+    proc.on("error", (error: Error) => {
       resolve({ output: finalOutput, stderr: `${stderr}\n${String(error)}`.trim(), exitCode: 1 });
     });
   });
@@ -472,14 +505,13 @@ export default function designStudioExtension(pi: ExtensionAPI) {
   }
 
   async function promptToSaveDesign(ctx: ExtensionContext, document: string) {
-    if (!state.profile) return;
-    const targetPath = savePathForTopic(ctx.cwd, state.profile, state.topic);
-    const relativePath = path.relative(ctx.cwd, targetPath) || path.basename(targetPath);
-    const shouldSave = await ctx.ui.confirm("Save design?", `Save final design to ${relativePath}?`);
+    if (!state.profile || !state.savePath) return;
+    const relativePath = path.relative(ctx.cwd, state.savePath) || path.basename(state.savePath);
+    const shouldSave = await ctx.ui.confirm("Save design?", `Save to ${relativePath}?`);
     if (!shouldSave) return;
 
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, document, "utf-8");
+    fs.mkdirSync(path.dirname(state.savePath), { recursive: true });
+    fs.writeFileSync(state.savePath, document, "utf-8");
     ctx.ui.notify(`Saved design to ${relativePath}`, "info");
   }
 
@@ -487,11 +519,18 @@ export default function designStudioExtension(pi: ExtensionAPI) {
     if (!state.active || state.phase !== "debating" || !state.profile) return;
 
     const topic = state.topic;
-    const briefMarkdown = formatBriefMarkdown(topic, state.brief, state.summary, state.missingInfo);
+    const briefMarkdown = state.rawBriefMarkdown ?? formatBriefMarkdown(topic, state.brief, state.summary, state.missingInfo);
     const architectAName = describeRole(state.profile.architectA);
     const architectBName = describeRole(state.profile.architectB);
 
+    if (!state.savePath) {
+      state.savePath = savePathForTopic(ctx.cwd, state.profile, state.topic);
+    }
+    // Write the working brief to ~/.pi/agent/designs/ (not the repo)
+    const workingFile = workingPathForTopic(state.topic);
+    fs.writeFileSync(workingFile, briefMarkdown, "utf-8");
     ctx.ui.notify(`Starting design debate for ${topic}`, "info");
+    persistState();
     updateUi(ctx);
 
     let draft = "";
@@ -499,8 +538,46 @@ export default function designStudioExtension(pi: ExtensionAPI) {
     let accepted = false;
     let acceptedRound = state.profile.maxRounds;
 
+    const PREVIEW_LINES = 6;
+    const THROTTLE_MS = 150;
+    let lastWidgetUpdate = 0;
+    let pendingWidgetTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const setStreamingPreview = (label: string, text: string, isThinking: boolean) => {
+      const baseInfo = formatProfileWidget(state) ?? [];
+      const allLines = text.split("\n");
+      const preview = allLines.length > PREVIEW_LINES
+        ? ["…", ...allLines.slice(-PREVIEW_LINES)]
+        : allLines;
+      const phaseTag = isThinking ? " (thinking)" : "";
+      ctx.ui.setWidget("design-studio", [...baseInfo, "", `── ${label}${phaseTag} ──`, ...preview]);
+    };
+
+    const throttledPreview = (label: string, text: string, isThinking: boolean) => {
+      const now = Date.now();
+      if (now - lastWidgetUpdate >= THROTTLE_MS) {
+        lastWidgetUpdate = now;
+        setStreamingPreview(label, text, isThinking);
+      } else if (!pendingWidgetTimer) {
+        pendingWidgetTimer = setTimeout(() => {
+          pendingWidgetTimer = null;
+          lastWidgetUpdate = Date.now();
+          setStreamingPreview(label, text, isThinking);
+        }, THROTTLE_MS - (now - lastWidgetUpdate));
+      }
+    };
+
+    const clearPreview = () => {
+      if (pendingWidgetTimer) {
+        clearTimeout(pendingWidgetTimer);
+        pendingWidgetTimer = null;
+      }
+      ctx.ui.setWidget("design-studio", formatProfileWidget(state));
+    };
+
     for (let round = 1; round <= state.profile.maxRounds; round++) {
-      ctx.ui.setStatus("design-studio", ctx.ui.theme.fg("warning", `design: A drafting (${round}/${state.profile.maxRounds})`));
+      const roundLabel = `${round}/${state.profile.maxRounds}`;
+      ctx.ui.setStatus("design-studio", ctx.ui.theme.fg("warning", `design: A drafting (${roundLabel})`));
       const draftTask =
         round === 1
           ? `Create the initial design document for the following brief.\n\n${briefMarkdown}`
@@ -511,10 +588,12 @@ export default function designStudioExtension(pi: ExtensionAPI) {
         systemPrompt: ARCHITECT_A_PROMPT,
         task: draftTask,
         cwd: ctx.cwd,
+        onStreamingUpdate: (text, isThinking) => throttledPreview(`Architect A (${roundLabel})`, text, isThinking),
       });
+      clearPreview();
       draft = assertDebateResult(draftResult, `Architect A round ${round}`);
 
-      ctx.ui.setStatus("design-studio", ctx.ui.theme.fg("warning", `design: B reviewing (${round}/${state.profile.maxRounds})`));
+      ctx.ui.setStatus("design-studio", ctx.ui.theme.fg("warning", `design: B reviewing (${roundLabel})`));
       const critiqueTask = `Review the proposed design against this brief.\n\n${briefMarkdown}\n\n## Proposed Design\n\n${draft}`;
       const critiqueResult = await runPiSubprocess({
         roleName: `architect-b-round-${round}`,
@@ -522,7 +601,9 @@ export default function designStudioExtension(pi: ExtensionAPI) {
         systemPrompt: ARCHITECT_B_PROMPT,
         task: critiqueTask,
         cwd: ctx.cwd,
+        onStreamingUpdate: (text, isThinking) => throttledPreview(`Architect B (${roundLabel})`, text, isThinking),
       });
+      clearPreview();
       critique = assertDebateResult(critiqueResult, `Architect B round ${round}`);
 
       const parsed = parseCritique(critique);
@@ -622,13 +703,13 @@ export default function designStudioExtension(pi: ExtensionAPI) {
     );
   }
 
-  pi.registerMessageRenderer(RESULT_MESSAGE_TYPE, (message) => {
+  pi.registerMessageRenderer(RESULT_MESSAGE_TYPE, (message: { content: string }) => {
     return new Markdown(message.content, 0, 0, getMarkdownTheme());
   });
 
   pi.registerCommand("design", {
     description: "Start an autonomous design workflow for a feature or component",
-    handler: async (args, ctx) => {
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       try {
         await startDesign(args, ctx);
       } catch (error) {
@@ -644,7 +725,7 @@ export default function designStudioExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("design-cancel", {
     description: "Cancel the active design workflow and close the design panel",
-    handler: async (_args, ctx) => {
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
       if (!state.active) {
         updateUi(ctx);
         ctx.ui.notify("No active design workflow.", "info");
@@ -653,6 +734,86 @@ export default function designStudioExtension(pi: ExtensionAPI) {
       await restorePreviousModelIfNeeded(ctx);
       resetState(ctx);
       ctx.ui.notify("Design workflow canceled.", "info");
+    },
+  });
+
+  pi.registerCommand("design-debate", {
+    description: "Run a design debate directly from an existing brief file, skipping intake",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const filePath = args.trim();
+      if (!filePath) {
+        ctx.ui.notify("Usage: /design-debate <path-to-brief.md>", "warning");
+        return;
+      }
+
+      const resolved = path.resolve(ctx.cwd, filePath);
+      if (!fs.existsSync(resolved)) {
+        ctx.ui.notify(`File not found: ${filePath}`, "error");
+        return;
+      }
+
+      if (state.active) {
+        const ok = await ctx.ui.confirm(
+          "Replace active design?",
+          `Abandon the current design workflow for ${state.topic} and start a new debate?`,
+        );
+        if (!ok) return;
+        await restorePreviousModelIfNeeded(ctx);
+        resetState(ctx);
+      }
+
+      const rawBrief = fs.readFileSync(resolved, "utf-8").trim();
+      if (!rawBrief) {
+        ctx.ui.notify(`Brief file is empty: ${filePath}`, "error");
+        return;
+      }
+
+      const topic = path.basename(resolved, path.extname(resolved));
+
+      config = loadDesignStudioConfig(ctx.cwd);
+      const chosen = chooseProfile(config, ctx);
+      validateRole(ctx, chosen.profile.architectA, "Architect A");
+      validateRole(ctx, chosen.profile.architectB, "Architect B");
+
+      const previousSessionModel = ctx.model
+        ? {
+          provider: ctx.model.provider,
+          model: ctx.model.id,
+          thinkingLevel: (THINKING_LEVELS.includes(pi.getThinkingLevel() as ThinkingLevel)
+            ? pi.getThinkingLevel()
+            : "off") as ThinkingLevel,
+        }
+        : undefined;
+
+      state = {
+        active: true,
+        phase: "debating",
+        topic,
+        profileName: chosen.name,
+        profile: chosen.profile,
+        brief: cloneBrief(DEFAULT_BRIEF),
+        missingInfo: [],
+        previousSessionModel,
+        savePath: resolved,
+        rawBriefMarkdown: rawBrief,
+      };
+      pi.setSessionName(`Design Debate: ${topic}`);
+      persistState();
+      updateUi(ctx);
+
+      try {
+        await runDebate(ctx);
+      } catch (error) {
+        state.phase = "idle";
+        persistState();
+        updateUi(ctx);
+        await restorePreviousModelIfNeeded(ctx);
+        resetState(ctx);
+        ctx.ui.notify(
+          `Design debate failed: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+      }
     },
   });
 
@@ -686,7 +847,13 @@ export default function designStudioExtension(pi: ExtensionAPI) {
       missingInfo: Type.Optional(Type.Array(Type.String(), { description: "Remaining gaps or questions." })),
       brief: Type.Optional(DesignCheckpointBriefSchema),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(
+      _toolCallId: string,
+      params: DesignCheckpointParams,
+      _signal: AbortSignal | undefined,
+      _onUpdate: AgentToolUpdateCallback | undefined,
+      ctx: ExtensionContext,
+    ) {
       if (!state.active) {
         return {
           content: [{ type: "text", text: "No active /design workflow." }],
@@ -696,7 +863,7 @@ export default function designStudioExtension(pi: ExtensionAPI) {
 
       state.brief = mergeBrief(state.brief, params.brief ?? {});
       state.summary = params.summary?.trim() || state.summary;
-      state.missingInfo = params.missingInfo?.map((item) => item.trim()).filter(Boolean) ?? state.missingInfo;
+      state.missingInfo = params.missingInfo?.map((item: string) => item.trim()).filter(Boolean) ?? state.missingInfo;
       state.lastCheckpointAction = params.nextAction;
 
       if (params.nextAction === "request_phase_approval") {
@@ -719,7 +886,7 @@ export default function designStudioExtension(pi: ExtensionAPI) {
         details: { phase: state.phase, sufficientInfo: params.sufficientInfo },
       };
     },
-    renderCall(args, theme) {
+    renderCall(args: DesignCheckpointParams, theme: Theme) {
       let text = theme.fg("toolTitle", theme.bold("design_checkpoint "));
       text += theme.fg("accent", args.nextAction);
       if (Array.isArray(args.missingInfo) && args.missingInfo.length > 0) {
@@ -729,14 +896,14 @@ export default function designStudioExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.on("input", async (_event, ctx) => {
+  pi.on("input", async (_event: InputEvent, ctx: ExtensionContext) => {
     if (state.active && state.phase === "debating") {
       ctx.ui.notify("Design debate is running. Please wait for it to finish.", "info");
       return { action: "handled" as const };
     }
   });
 
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event: BeforeAgentStartEvent) => {
     if (!state.active || state.phase === "debating" || !state.profile) return;
     const briefMarkdown = formatBriefMarkdown(state.topic, state.brief, state.summary, state.missingInfo);
     const facilitatorLine = `Facilitator model: ${describeRole(state.profile.facilitator)}`;
@@ -746,7 +913,7 @@ export default function designStudioExtension(pi: ExtensionAPI) {
     };
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
+  pi.on("agent_end", async (_event: { type: "agent_end" }, ctx: ExtensionContext) => {
     if (!state.active || state.phase !== "debating") return;
     if (debatePromise) return;
     debatePromise = runDebate(ctx)
@@ -765,7 +932,7 @@ export default function designStudioExtension(pi: ExtensionAPI) {
     await debatePromise;
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (_event: { type: "session_start" }, ctx: ExtensionContext) => {
     try {
       config = loadDesignStudioConfig(ctx.cwd);
     } catch (error) {
@@ -794,7 +961,7 @@ export default function designStudioExtension(pi: ExtensionAPI) {
     updateUi(ctx);
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", async (_event: { type: "session_shutdown" }, ctx: ExtensionContext) => {
     if (state.active) persistState();
     updateUi(ctx);
   });

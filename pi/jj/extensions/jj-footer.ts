@@ -16,7 +16,7 @@
 
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "../../lib/tui-shim.ts";
 
 import {
   JJ_FOOTER_COMMANDS,
