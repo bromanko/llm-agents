@@ -1,25 +1,25 @@
-import type {
-  AgentToolResult,
-  AgentToolUpdateCallback,
-  BashOperations,
-  ExtensionAPI,
-  ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import { existsSync, rmSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 
+import {
+  createWorkspaceWindow,
+  findWorkspaceWindow,
+  inTmuxEnv,
+  killWindow,
+  listWorkspaceWindows,
+  parseTmuxVersion,
+  selectWindow,
+} from "../lib/tmux-workspaces.ts";
+import {
+  JJ_WORKSPACE_COMMANDS,
+  isValidWorkspaceName,
+  parseWorkspaceHeads,
+  parseWorkspaceNameFromOutput,
+  type WorkspaceHead,
+} from "../lib/workspace.ts";
 import { isJjRepo } from "../lib/utils.ts";
-
-interface WorkspaceRef {
-  name: string;
-  path: string;
-}
-
-interface WorkspaceHead {
-  name: string;
-  changeId: string;
-}
 
 interface WorkspaceChange {
   changeId: string;
@@ -35,91 +35,16 @@ interface JjResult {
   killed: boolean;
 }
 
-const DEFAULT_JJ_TIMEOUT = 20_000;
-const LONG_JJ_TIMEOUT = 60_000;
-
-const WORKSPACE_STATE_ENTRY = "jj-workspace-state";
-const WORKSPACE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-const WORKSPACE_NAME_MAX_LENGTH = 128;
-const CWD_LINE_RE = /^Current working directory: .*$/gm;
-
-function isValidWorkspaceName(name: string): boolean {
-  return name.length <= WORKSPACE_NAME_MAX_LENGTH && WORKSPACE_NAME_RE.test(name);
-}
-
-interface Tool {
-  name: string;
-  label: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  operations?: BashOperations;
-  execute(
-    toolCallId: string,
-    params: unknown,
-    signal: AbortSignal | undefined,
-    onUpdate: AgentToolUpdateCallback | undefined,
-    ctx: ExtensionContext,
-  ): Promise<AgentToolResult<unknown>>;
-}
-
-type ToolFactory = (cwd: string) => Tool;
-
-interface ToolFactories {
-  createReadTool: ToolFactory;
-  createWriteTool: ToolFactory;
-  createEditTool: ToolFactory;
-  createBashTool: ToolFactory;
-}
-
-function createFallbackToolFactory(name: string): ToolFactory {
-  return (cwd: string): Tool => ({
-    name,
-    label: name,
-    description: `Fallback ${name} tool (extension test mode)`,
-    parameters: { type: "object", properties: {}, additionalProperties: true },
-    operations: { exec: async () => ({ exitCode: 0 }) },
-    async execute() {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `${name} fallback executed in ${cwd}`,
-          },
-        ],
-        details: undefined,
-      };
-    },
-  });
-}
-
-async function loadToolFactories(): Promise<ToolFactories> {
-  try {
-    const mod = await import("@mariozechner/pi-coding-agent");
-
-    if (
-      typeof mod.createReadTool === "function"
-      && typeof mod.createWriteTool === "function"
-      && typeof mod.createEditTool === "function"
-      && typeof mod.createBashTool === "function"
-    ) {
-      return {
-        createReadTool: mod.createReadTool as ToolFactory,
-        createWriteTool: mod.createWriteTool as ToolFactory,
-        createEditTool: mod.createEditTool as ToolFactory,
-        createBashTool: mod.createBashTool as ToolFactory,
-      };
-    }
-  } catch {
-    // Tests run without @mariozechner/pi-coding-agent installed as an npm dependency.
-  }
-
-  return {
-    createReadTool: createFallbackToolFactory("read"),
-    createWriteTool: createFallbackToolFactory("write"),
-    createEditTool: createFallbackToolFactory("edit"),
-    createBashTool: createFallbackToolFactory("bash"),
+interface CommandContext {
+  ui: {
+    notify(message: string, level?: "info" | "warning" | "error"): void;
+    confirm(title: string, message: string): Promise<boolean>;
   };
 }
+
+const DEFAULT_JJ_TIMEOUT = 20_000;
+const LONG_JJ_TIMEOUT = 60_000;
+const MIN_TMUX_VERSION = 3.2;
 
 function parseBoolean(value: string): boolean {
   const trimmed = value.trim();
@@ -128,72 +53,33 @@ function parseBoolean(value: string): boolean {
   throw new Error(`Expected 'true' or 'false', got '${trimmed}'`);
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-type SavedWorkspaceResult =
-  | { status: "found"; workspace: WorkspaceRef }
-  | { status: "cleared" }
-  | { status: "absent" };
-
-function parseSavedWorkspace(entries: unknown[]): SavedWorkspaceResult {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (!isObject(entry)) continue;
-
-    const customType = typeof entry.customType === "string"
-      ? entry.customType
-      : (typeof entry.type === "string" && entry.type === WORKSPACE_STATE_ENTRY
-        ? entry.type
-        : undefined);
-
-    if (customType !== WORKSPACE_STATE_ENTRY) continue;
-
-    const data = (entry as { data?: unknown }).data;
-    if (data === null || data === undefined) return { status: "cleared" };
-    if (!isObject(data)) return { status: "cleared" };
-
-    const name = data.name;
-    const path = data.path;
-    if (typeof name !== "string" || typeof path !== "string") return { status: "cleared" };
-
-    return { status: "found", workspace: { name, path } };
-  }
-
-  return { status: "absent" };
-}
-
 function isAncestorOrSame(candidate: string, target: string): boolean {
   const rel = relative(candidate, target);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function workspaceCompletionItems(names: string[], prefix: string): AutocompleteItem[] | null {
+  const current = prefix.trim();
+  const filtered = names
+    .filter((name) => name.startsWith(current))
+    .sort()
+    .map((name) => ({ value: name, label: name }));
+
+  return filtered.length > 0 ? filtered : null;
 }
 
 export default async function(pi: ExtensionAPI) {
   const defaultCwd = process.cwd();
   if (!isJjRepo(defaultCwd)) return;
 
-  const {
-    createReadTool,
-    createWriteTool,
-    createEditTool,
-    createBashTool,
-  } = await loadToolFactories();
-
-  let activeCwd = defaultCwd;
-  let activeWorkspace: WorkspaceRef | null = null;
   let workspaceHeadsCache: WorkspaceHead[] = [];
-
-  function getActiveCwd(): string {
-    return activeCwd;
-  }
 
   async function runJj(
     args: string[],
     options?: { cwd?: string; timeout?: number },
   ): Promise<JjResult> {
     const result = await pi.exec("jj", ["--color=never", ...args], {
-      cwd: options?.cwd ?? defaultCwd,
+      cwd: options?.cwd ?? process.cwd(),
       timeout: options?.timeout ?? DEFAULT_JJ_TIMEOUT,
     });
 
@@ -215,37 +101,21 @@ export default async function(pi: ExtensionAPI) {
     };
   }
 
-  function persistWorkspaceState(workspace: WorkspaceRef | null) {
-    pi.appendEntry(WORKSPACE_STATE_ENTRY, workspace);
-  }
-
   async function listWorkspaceHeads(): Promise<WorkspaceHead[]> {
-    const result = await runJj([
-      "workspace",
-      "list",
-      "-T",
-      'name ++ "|" ++ self.target().change_id() ++ "\\n"',
-    ]);
+    const result = await pi.exec("jj", [...JJ_WORKSPACE_COMMANDS.workspaceList], {
+      cwd: process.cwd(),
+      timeout: DEFAULT_JJ_TIMEOUT,
+    });
+
+    if (result.killed) {
+      throw new Error("Command timed out: jj workspace list");
+    }
 
     if (result.code !== 0) {
-      throw new Error(result.stderr.trim() || "Failed to list workspaces");
+      throw new Error((result.stderr ?? "").trim() || "Failed to list workspaces");
     }
 
-    const heads: WorkspaceHead[] = [];
-    for (const rawLine of result.stdout.split("\n")) {
-      const line = rawLine.trim();
-      if (!line) continue;
-
-      const sep = line.indexOf("|");
-      if (sep === -1) continue;
-
-      const name = line.slice(0, sep);
-      const changeId = line.slice(sep + 1);
-      if (!name || !changeId) continue;
-      heads.push({ name, changeId });
-    }
-
-    return heads;
+    return parseWorkspaceHeads(result.stdout ?? "");
   }
 
   async function refreshWorkspaceHeadsCache() {
@@ -264,23 +134,66 @@ export default async function(pi: ExtensionAPI) {
     return resolvedPath.length > 0 ? resolvedPath : null;
   }
 
-  function workspaceCompletionItems(
-    names: string[],
-    prefix: string,
-  ): AutocompleteItem[] | null {
-    const current = prefix.trim();
-    const filtered = names
-      .filter((name) => name.startsWith(current))
-      .sort()
-      .map((name) => ({ value: name, label: name }));
-
-    return filtered.length > 0 ? filtered : null;
-  }
-
   function getWorkspaceNamesForCompletion(): string[] {
     return workspaceHeadsCache
       .filter((ws) => ws.name !== "default")
       .map((ws) => ws.name);
+  }
+
+  async function getCurrentNamedWorkspace(cwd: string): Promise<string | null> {
+    const changeResult = await pi.exec("jj", [...JJ_WORKSPACE_COMMANDS.currentChangeId], {
+      cwd,
+      timeout: DEFAULT_JJ_TIMEOUT,
+    });
+
+    if (changeResult.killed) {
+      throw new Error("Command timed out: jj log -r @ -T change_id --no-graph");
+    }
+
+    if (changeResult.code !== 0) {
+      throw new Error((changeResult.stderr ?? "").trim() || "Failed to determine current workspace change id.");
+    }
+
+    const workspaceListResult = await pi.exec("jj", [...JJ_WORKSPACE_COMMANDS.workspaceList], {
+      cwd,
+      timeout: DEFAULT_JJ_TIMEOUT,
+    });
+
+    if (workspaceListResult.killed) {
+      throw new Error("Command timed out: jj workspace list");
+    }
+
+    if (workspaceListResult.code !== 0) {
+      throw new Error((workspaceListResult.stderr ?? "").trim() || "Failed to determine current workspace.");
+    }
+
+    return parseWorkspaceNameFromOutput(
+      (changeResult.stdout ?? "").trim(),
+      workspaceListResult.stdout ?? "",
+    );
+  }
+
+  async function ensureTmuxReady(): Promise<string | null> {
+    if (!inTmuxEnv()) {
+      return "Workspace commands require tmux. Start pi inside tmux and retry.";
+    }
+
+    const result = await pi.exec("tmux", ["-V"], { timeout: 3_000 });
+    if (result.killed || result.code !== 0) {
+      return "Workspace commands require tmux 3.2 or later. Could not determine tmux version.";
+    }
+
+    const versionText = (result.stdout ?? "").trim();
+    const version = parseTmuxVersion(versionText);
+    if (version === null) {
+      return `Workspace commands require tmux 3.2 or later. Found: ${versionText || "unknown"}.`;
+    }
+
+    if (version < MIN_TMUX_VERSION) {
+      return `Workspace commands require tmux 3.2 or later. Found: ${versionText || version.toString()}.`;
+    }
+
+    return null;
   }
 
   async function getUniqueWorkspaceChanges(name: string): Promise<WorkspaceChange[]> {
@@ -313,15 +226,9 @@ export default async function(pi: ExtensionAPI) {
       const description = line.slice(firstSep + 1, secondSep).trim();
       const empty = parseBoolean(line.slice(secondSep + 1, thirdSep));
       const conflict = parseBoolean(line.slice(thirdSep + 1));
-
       if (!changeId) continue;
 
-      changes.push({
-        changeId,
-        description,
-        empty,
-        conflict,
-      });
+      changes.push({ changeId, description, empty, conflict });
     }
 
     return changes;
@@ -377,50 +284,11 @@ export default async function(pi: ExtensionAPI) {
     }
   }
 
-  function setActiveWorkspace(workspace: WorkspaceRef | null) {
-    activeWorkspace = workspace;
-    activeCwd = workspace?.path ?? defaultCwd;
-  }
-
-  function registerToolOverride(toolFactory: ToolFactory) {
-    const defaultTool = toolFactory(defaultCwd);
-    let cachedCwd = defaultCwd;
-    let cachedTool = defaultTool;
-
-    pi.registerTool({
-      ...defaultTool,
-      async execute(
-        toolCallId: string,
-        params: unknown,
-        signal: AbortSignal | undefined,
-        onUpdate: AgentToolUpdateCallback | undefined,
-        ctx: ExtensionContext,
-      ) {
-        const cwd = getActiveCwd();
-        if (cwd !== cachedCwd) {
-          cachedTool = toolFactory(cwd);
-          cachedCwd = cwd;
-        }
-        return cachedTool.execute(toolCallId, params, signal, onUpdate, ctx);
-      },
-    });
-  }
-
-  registerToolOverride(createReadTool);
-  registerToolOverride(createWriteTool);
-  registerToolOverride(createEditTool);
-  registerToolOverride(createBashTool);
-
-  pi.on("user_bash", () => {
-    if (!activeWorkspace) return;
-
-    const bashTool = createBashTool(getActiveCwd());
-    return { operations: bashTool.operations as BashOperations };
-  });
+  await refreshWorkspaceHeadsCache();
 
   pi.registerCommand("ws-create", {
-    description: "Create a jj workspace and switch tool CWD into it",
-    handler: async (args, ctx) => {
+    description: "Create a jj workspace and open it in a tmux window",
+    handler: async (args: string, ctx: CommandContext) => {
       const name = args.trim();
       if (!name) {
         ctx.ui.notify("Usage: /ws-create <name>", "error");
@@ -428,78 +296,124 @@ export default async function(pi: ExtensionAPI) {
       }
 
       if (!isValidWorkspaceName(name)) {
+        ctx.ui.notify(`Invalid workspace name '${name}'.`, "error");
+        return;
+      }
+
+      const tmuxError = await ensureTmuxReady();
+      if (tmuxError) {
+        ctx.ui.notify(tmuxError, "error");
+        return;
+      }
+
+      let currentNamedWorkspace: string | null;
+      try {
+        currentNamedWorkspace = await getCurrentNamedWorkspace(process.cwd());
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        return;
+      }
+
+      if (currentNamedWorkspace !== null) {
         ctx.ui.notify(
-          `Invalid workspace name '${name}'. Names must start with a letter or digit, contain only letters, digits, hyphens, and underscores, and be at most ${WORKSPACE_NAME_MAX_LENGTH} characters.`,
+          `/ws-create must be run from the default workspace. Current workspace: ${currentNamedWorkspace}.`,
           "error",
         );
         return;
       }
 
-      const repoRootResult = await runJj(["root"]);
-      if (repoRootResult.code !== 0) {
-        ctx.ui.notify(
-          repoRootResult.stderr.trim() || "Failed to determine repository root.",
-          "error",
-        );
+      await refreshWorkspaceHeadsCache();
+      if (workspaceHeadsCache.some((ws) => ws.name === name)) {
+        ctx.ui.notify(`Workspace '${name}' already exists.`, "error");
         return;
       }
 
-      const repoRoot = repoRootResult.stdout.trim();
-      if (!repoRoot) {
+      const rootResult = await runJj(["root"]);
+      if (rootResult.code !== 0) {
+        ctx.ui.notify(rootResult.stderr.trim() || "Failed to determine repository root.", "error");
+        return;
+      }
+
+      const defaultRoot = rootResult.stdout.trim();
+      if (!defaultRoot) {
         ctx.ui.notify("Failed to determine repository root.", "error");
         return;
       }
 
-      const repoName = basename(repoRoot);
-      const wsPath = resolve(repoRoot, "..", `${repoName}-ws-${name}`);
-
+      const wsPath = resolve(defaultRoot, "..", `${basename(defaultRoot)}-ws-${name}`);
       if (existsSync(wsPath)) {
-        ctx.ui.notify(
-          `Workspace path already exists on disk: ${wsPath}`,
-          "error",
-        );
+        ctx.ui.notify(`Workspace path already exists on disk: ${wsPath}`, "error");
         return;
       }
 
-      const createResult = await runJj(["workspace", "add", "--name", name, wsPath], { timeout: LONG_JJ_TIMEOUT });
+      const createResult = await runJj(["workspace", "add", "--name", name, wsPath], {
+        timeout: LONG_JJ_TIMEOUT,
+      });
       if (createResult.code !== 0) {
         ctx.ui.notify(createResult.stderr.trim() || `Failed to create workspace '${name}'.`, "error");
         return;
       }
 
-      setActiveWorkspace({ name, path: wsPath });
-      persistWorkspaceState(activeWorkspace);
-      await refreshWorkspaceHeadsCache();
+      const windowResult = await createWorkspaceWindow(pi, {
+        wsName: name,
+        cwd: wsPath,
+        continueRecent: false,
+      });
 
-      ctx.ui.notify(`Switched to workspace ${name} at ${wsPath}`, "info");
+      if (!windowResult.ok) {
+        await runJj(["workspace", "forget", name], { timeout: LONG_JJ_TIMEOUT });
+        await safeDeleteWorkspaceDir(wsPath, defaultRoot);
+        await refreshWorkspaceHeadsCache();
+        ctx.ui.notify(windowResult.error, "error");
+        return;
+      }
+
+      await refreshWorkspaceHeadsCache();
+      const successMessage = [
+        `Created workspace '${name}' at ${wsPath}.`,
+        `Opened tmux window ws:${name}.`,
+      ].join(" ");
+      ctx.ui.notify(successMessage, "info");
+
+      if (!windowResult.selected) {
+        ctx.ui.notify(`Created workspace window ws:${name}, but could not select it automatically.`, "warning");
+      }
     },
   });
 
   pi.registerCommand("ws-list", {
-    description: "List non-default jj workspaces",
-    handler: async (_args, ctx) => {
+    description: "List non-default jj workspaces and tmux window state",
+    handler: async (_args: string, ctx: CommandContext) => {
+      const tmuxError = await ensureTmuxReady();
+      if (tmuxError) {
+        ctx.ui.notify(tmuxError, "error");
+        return;
+      }
+
       await refreshWorkspaceHeadsCache();
       const nonDefault = workspaceHeadsCache.filter((ws) => ws.name !== "default");
-
       if (nonDefault.length === 0) {
         ctx.ui.notify("No non-default workspaces found.", "info");
         return;
       }
 
-      const pathEntries = await Promise.all(
-        nonDefault.map(async (ws) => ({
-          ws,
-          wsPath: await resolveWorkspacePath(ws.name),
-        })),
-      );
+      const windows = await listWorkspaceWindows(pi);
+      const pathEntries = await Promise.all(nonDefault.map(async (ws) => ({
+        ws,
+        wsPath: await resolveWorkspacePath(ws.name),
+        window: windows.find((window) => window.wsName === ws.name) ?? null,
+      })));
 
       const lines: string[] = [];
-      for (const { ws, wsPath } of pathEntries) {
-        const activeMarker = activeWorkspace?.name === ws.name ? " (active)" : "";
+      for (const entry of pathEntries) {
+        const status = entry.window
+          ? (entry.window.active ? "open (active window)" : "open")
+          : "—";
 
-        lines.push(`- ${ws.name}${activeMarker}`);
-        lines.push(`  path: ${wsPath ?? "<missing>"}`);
-        lines.push(`  change: ${ws.changeId}`);
+        lines.push(`- ${entry.ws.name}`);
+        lines.push(`  path: ${entry.wsPath ?? "<missing>"}`);
+        lines.push(`  change: ${entry.ws.changeId}`);
+        lines.push(`  window: ${status}`);
       }
 
       ctx.ui.notify(lines.join("\n"), "info");
@@ -507,11 +421,11 @@ export default async function(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("ws-switch", {
-    description: "Switch to an existing jj workspace",
+    description: "Switch to an existing jj workspace tmux window",
     getArgumentCompletions(prefix: string) {
       return workspaceCompletionItems(getWorkspaceNamesForCompletion(), prefix);
     },
-    handler: async (args, ctx) => {
+    handler: async (args: string, ctx: CommandContext) => {
       const name = args.trim();
       if (!name) {
         ctx.ui.notify("Usage: /ws-switch <name>", "error");
@@ -519,16 +433,31 @@ export default async function(pi: ExtensionAPI) {
       }
 
       if (!isValidWorkspaceName(name)) {
-        ctx.ui.notify(
-          `Invalid workspace name '${name}'. Names must start with a letter or digit, contain only letters, digits, hyphens, and underscores, and be at most ${WORKSPACE_NAME_MAX_LENGTH} characters.`,
-          "error",
-        );
+        ctx.ui.notify(`Invalid workspace name '${name}'.`, "error");
+        return;
+      }
+
+      const tmuxError = await ensureTmuxReady();
+      if (tmuxError) {
+        ctx.ui.notify(tmuxError, "error");
         return;
       }
 
       await refreshWorkspaceHeadsCache();
       if (!workspaceHeadsCache.some((ws) => ws.name === name)) {
         ctx.ui.notify(`Workspace '${name}' does not exist.`, "error");
+        return;
+      }
+
+      const existingWindow = await findWorkspaceWindow(pi, name);
+      if (existingWindow) {
+        const selected = await selectWindow(pi, existingWindow.windowId);
+        if (!selected) {
+          ctx.ui.notify(`Found tmux window for workspace '${name}', but could not select it.`, "error");
+          return;
+        }
+
+        ctx.ui.notify(`Switched to existing tmux window for workspace '${name}'.`, "info");
         return;
       }
 
@@ -543,27 +472,19 @@ export default async function(pi: ExtensionAPI) {
         return;
       }
 
-      setActiveWorkspace({ name, path: wsPath });
-      persistWorkspaceState(activeWorkspace);
+      const windowResult = await createWorkspaceWindow(pi, {
+        wsName: name,
+        cwd: wsPath,
+        continueRecent: true,
+      });
+      if (!windowResult.ok) {
+        ctx.ui.notify(windowResult.error, "error");
+        return;
+      }
 
-      ctx.ui.notify(`Switched to workspace ${name} at ${wsPath}`, "info");
-    },
-  });
-
-  pi.registerCommand("ws-default", {
-    description: "Return to the default jj workspace without deleting others",
-    handler: async (_args, ctx) => {
-      const previous = activeWorkspace?.name;
-      setActiveWorkspace(null);
-      persistWorkspaceState(null);
-
-      if (previous) {
-        ctx.ui.notify(
-          `Switched back to default workspace. Workspace ${previous} is preserved.`,
-          "info",
-        );
-      } else {
-        ctx.ui.notify("Already in default workspace.", "info");
+      ctx.ui.notify(`Re-created tmux window for workspace '${name}'.`, "info");
+      if (!windowResult.selected) {
+        ctx.ui.notify(`Created workspace window ws:${name}, but could not select it automatically.`, "warning");
       }
     },
   });
@@ -573,24 +494,42 @@ export default async function(pi: ExtensionAPI) {
     getArgumentCompletions(prefix: string) {
       return workspaceCompletionItems(getWorkspaceNamesForCompletion(), prefix);
     },
-    handler: async (args, ctx) => {
-      const requested = args.trim();
-      const name = requested || activeWorkspace?.name;
+    handler: async (args: string, ctx: CommandContext) => {
+      const name = args.trim();
       if (!name) {
-        ctx.ui.notify("Usage: /ws-finish <name> (or run inside an active workspace)", "error");
+        ctx.ui.notify("Usage: /ws-finish <name>", "error");
         return;
       }
 
       if (!isValidWorkspaceName(name)) {
-        ctx.ui.notify(
-          `Invalid workspace name '${name}'. Names must start with a letter or digit, contain only letters, digits, hyphens, and underscores, and be at most ${WORKSPACE_NAME_MAX_LENGTH} characters.`,
-          "error",
-        );
+        ctx.ui.notify(`Invalid workspace name '${name}'.`, "error");
         return;
       }
 
       if (name === "default") {
         ctx.ui.notify("Refusing to finish the default workspace.", "error");
+        return;
+      }
+
+      const tmuxError = await ensureTmuxReady();
+      if (tmuxError) {
+        ctx.ui.notify(tmuxError, "error");
+        return;
+      }
+
+      let currentNamedWorkspace: string | null;
+      try {
+        currentNamedWorkspace = await getCurrentNamedWorkspace(process.cwd());
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        return;
+      }
+
+      if (currentNamedWorkspace !== null) {
+        ctx.ui.notify(
+          `/ws-finish must be run from the default workspace. Current workspace: ${currentNamedWorkspace}.`,
+          "error",
+        );
         return;
       }
 
@@ -606,34 +545,62 @@ export default async function(pi: ExtensionAPI) {
         return;
       }
 
-      const confirmed = await ctx.ui.confirm(
-        "Finish workspace",
-        [
-          `Finish workspace '${name}'?`,
-          "",
-          "This will merge changes into default, forget the workspace, and delete:",
-          wsPath,
-        ].join("\n"),
-      );
+      const existingWindow = await findWorkspaceWindow(pi, name);
+      if (existingWindow) {
+        const confirmedWindowClose = await ctx.ui.confirm(
+          "Close workspace window",
+          `Workspace '${name}' has an open tmux window. Close it before finishing?`,
+        );
+        if (!confirmedWindowClose) {
+          ctx.ui.notify("Cancelled workspace finish.", "info");
+          return;
+        }
 
-      if (!confirmed) {
-        ctx.ui.notify("Cancelled workspace finish.", "info");
+        await killWindow(pi, existingWindow.windowId);
+        const afterKill = await findWorkspaceWindow(pi, name);
+        if (afterKill) {
+          ctx.ui.notify(`Could not close tmux window for workspace '${name}'.`, "error");
+          return;
+        }
+      }
+
+      const snapshotResult = await runJj(["status"], {
+        cwd: wsPath,
+        timeout: LONG_JJ_TIMEOUT,
+      });
+      if (snapshotResult.code !== 0) {
+        ctx.ui.notify(
+          snapshotResult.stderr.trim() || `Failed to snapshot workspace '${name}' before finish.`,
+          "error",
+        );
         return;
+      }
+
+      const snapshotHasChanges = !snapshotResult.stdout.includes("The working copy has no changes.");
+      if (snapshotHasChanges) {
+        const confirmedSnapshot = await ctx.ui.confirm(
+          "Merge snapshotted workspace changes",
+          [
+            `Snapshot detected working-copy changes in ${wsPath}.`,
+            "These changes have been snapshotted into jj and will be merged into default.",
+            "Continue?",
+          ].join("\n\n"),
+        );
+        if (!confirmedSnapshot) {
+          ctx.ui.notify("Cancelled workspace finish after snapshot.", "info");
+          return;
+        }
       }
 
       let changes: WorkspaceChange[];
       try {
         changes = await getUniqueWorkspaceChanges(name);
       } catch (error) {
-        ctx.ui.notify(
-          error instanceof Error ? error.message : String(error),
-          "error",
-        );
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
         return;
       }
 
-      const hasConflictsInWorkspace = changes.some((change) => change.conflict);
-      if (hasConflictsInWorkspace) {
+      if (changes.some((change) => change.conflict)) {
         ctx.ui.notify(
           `Workspace '${name}' has conflicted commits. Resolve conflicts in the workspace and retry.`,
           "error",
@@ -641,34 +608,19 @@ export default async function(pi: ExtensionAPI) {
         return;
       }
 
-      // Check if the default workspace has uncommitted changes. If so, block
-      // the finish to avoid baking WIP edits into the merge commit's ancestry.
       if (changes.some((change) => !change.empty)) {
-        const defaultEmptyResult = await runJj([
-          "log",
-          "-r",
-          "default@",
-          "--no-graph",
-          "-T",
-          "empty",
-        ]);
-
-        if (defaultEmptyResult.code === 0) {
-          const defaultIsEmpty = defaultEmptyResult.stdout.trim() === "true";
-          if (!defaultIsEmpty) {
-            ctx.ui.notify(
-              "The default workspace has uncommitted changes. Commit or stash them before finishing a workspace to avoid mixing work-in-progress into the merge.",
-              "error",
-            );
-            return;
-          }
+        const defaultEmptyResult = await runJj(["log", "-r", "default@", "--no-graph", "-T", "empty"]);
+        if (defaultEmptyResult.code === 0 && defaultEmptyResult.stdout.trim() !== "true") {
+          ctx.ui.notify(
+            "The default workspace has uncommitted changes. Commit or stash them before finishing a workspace.",
+            "error",
+          );
+          return;
         }
       }
 
-      // If every unique commit is empty, abandon them and skip the merge entirely.
       if (changes.length > 0 && changes.every((change) => change.empty)) {
         const abandonedIds = new Set(changes.map((change) => change.changeId));
-
         const abandonResult = await runJj(["abandon", ...abandonedIds], { timeout: LONG_JJ_TIMEOUT });
         if (abandonResult.code !== 0) {
           ctx.ui.notify(
@@ -678,19 +630,14 @@ export default async function(pi: ExtensionAPI) {
           return;
         }
 
-        // Re-query to guard against races where a new commit appeared between
-        // the initial query and the abandon.
         try {
           changes = await getUniqueWorkspaceChanges(name);
         } catch (error) {
-          ctx.ui.notify(
-            error instanceof Error ? error.message : String(error),
-            "error",
-          );
+          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
           return;
         }
 
-        const newChanges = changes.filter((c) => !abandonedIds.has(c.changeId));
+        const newChanges = changes.filter((change) => !abandonedIds.has(change.changeId));
         if (newChanges.length > 0) {
           ctx.ui.notify(
             `Warning: ${newChanges.length} new commit(s) appeared in workspace '${name}' during cleanup. They will be included in the merge.`,
@@ -704,17 +651,10 @@ export default async function(pi: ExtensionAPI) {
         try {
           preMergeOpId = await getPreMergeOpId();
         } catch (error) {
-          ctx.ui.notify(
-            error instanceof Error ? error.message : String(error),
-            "error",
-          );
+          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
           return;
         }
 
-        // Find the non-empty head commits of the unique workspace changes.
-        // Using heads() with ~empty() avoids pulling in the workspace's empty
-        // working-copy commit as a merge parent, which would leave dangling
-        // empty commits in the log after workspace forget.
         const headsResult = await runJj([
           "log",
           "-r",
@@ -723,7 +663,6 @@ export default async function(pi: ExtensionAPI) {
           "-T",
           'change_id ++ "\\n"',
         ]);
-
         if (headsResult.code !== 0) {
           ctx.ui.notify(
             headsResult.stderr.trim() || `Failed to determine workspace head commits for '${name}'.`,
@@ -734,11 +673,8 @@ export default async function(pi: ExtensionAPI) {
 
         const headIds = headsResult.stdout
           .split("\n")
-          .map((l) => l.trim())
+          .map((line) => line.trim())
           .filter(Boolean);
-
-        // Fall back to ${name}@ if no non-empty heads found (shouldn't happen
-        // since we already checked changes.length > 0, but be defensive).
         const mergeParents = headIds.length > 0 ? headIds : [`${name}@`];
 
         const mergeResult = await runJj([
@@ -748,12 +684,8 @@ export default async function(pi: ExtensionAPI) {
           "-m",
           `finish workspace ${name}`,
         ], { timeout: LONG_JJ_TIMEOUT });
-
         if (mergeResult.code !== 0) {
-          ctx.ui.notify(
-            mergeResult.stderr.trim() || `Failed to merge workspace '${name}'.`,
-            "error",
-          );
+          ctx.ui.notify(mergeResult.stderr.trim() || `Failed to merge workspace '${name}'.`, "error");
           return;
         }
 
@@ -765,7 +697,6 @@ export default async function(pi: ExtensionAPI) {
           "-T",
           'conflict ++ "|" ++ change_id.short() ++ "\\n"',
         ]);
-
         if (conflictResult.code !== 0) {
           ctx.ui.notify(
             conflictResult.stderr.trim() || "Failed to verify merge conflict status.",
@@ -799,9 +730,6 @@ export default async function(pi: ExtensionAPI) {
         }
       }
 
-      setActiveWorkspace(null);
-      persistWorkspaceState(null);
-
       const forgetResult = await runJj(["workspace", "forget", name], { timeout: LONG_JJ_TIMEOUT });
       if (forgetResult.code !== 0) {
         ctx.ui.notify(
@@ -812,7 +740,7 @@ export default async function(pi: ExtensionAPI) {
       }
 
       const repoRootResult = await runJj(["root"]);
-      const repoRoot = repoRootResult.code === 0 ? repoRootResult.stdout.trim() : defaultCwd;
+      const repoRoot = repoRootResult.code === 0 ? repoRootResult.stdout.trim() : process.cwd();
       const deletion = await safeDeleteWorkspaceDir(wsPath, repoRoot);
 
       await refreshWorkspaceHeadsCache();
@@ -825,7 +753,6 @@ export default async function(pi: ExtensionAPI) {
         "-T",
         'change_id.short() ++ " " ++ description.first_line() ++ "\\n"',
       ]);
-
       const summary = summaryResult.code === 0 ? summaryResult.stdout.trim() : "";
 
       const deletionText = deletion.deleted
@@ -835,77 +762,12 @@ export default async function(pi: ExtensionAPI) {
       const message = [
         `Finished workspace ${name}, merged into default, forgot workspace, ${deletionText}.`,
         summary ? `Recent history:\n${summary}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      ].filter(Boolean).join("\n\n");
 
       ctx.ui.notify(message, "info");
-
       if (!deletion.deleted) {
-        ctx.ui.notify(
-          `Warning: could not delete workspace directory ${wsPath}: ${deletion.reason}`,
-          "warning",
-        );
+        ctx.ui.notify(`Warning: could not delete workspace directory ${wsPath}: ${deletion.reason}`, "warning");
       }
     },
-  });
-
-  pi.on("before_agent_start", (event) => {
-    if (!activeWorkspace) return;
-
-    const cwdLine = `Current working directory: ${getActiveCwd()}`;
-    const replaced = event.systemPrompt.replace(CWD_LINE_RE, cwdLine);
-    const rewrittenPrompt = replaced !== event.systemPrompt
-      ? replaced
-      : `${event.systemPrompt}\n${cwdLine}`;
-
-    const workspaceInstructions = [
-      `You are working in jj workspace "${activeWorkspace.name}".`,
-      "- Use `jj` for version control. NEVER use `git` commands directly.",
-      "- The full history is available via `jj log`.",
-      "- Keep commits incremental and descriptive.",
-    ].join("\n");
-
-    return {
-      systemPrompt: `${rewrittenPrompt}\n\n${workspaceInstructions}`,
-    };
-  });
-
-  pi.on("session_start", async (_event, ctx) => {
-    await refreshWorkspaceHeadsCache();
-
-    const entries = ctx.sessionManager.getEntries();
-    const saved = parseSavedWorkspace(entries as unknown[]);
-    if (saved.status === "absent") return;
-
-    if (saved.status === "cleared") {
-      setActiveWorkspace(null);
-      return;
-    }
-
-    const { workspace } = saved;
-    const existsByName = workspaceHeadsCache.some((ws) => ws.name === workspace.name);
-    const existsOnDisk = existsSync(workspace.path);
-
-    if (existsByName && existsOnDisk) {
-      setActiveWorkspace(workspace);
-      return;
-    }
-
-    setActiveWorkspace(null);
-
-    if (ctx.hasUI) {
-      if (!existsByName) {
-        ctx.ui.notify(
-          `Workspace '${workspace.name}' no longer exists, returning to default workspace.`,
-          "warning",
-        );
-      } else {
-        ctx.ui.notify(
-          `Workspace path '${workspace.path}' is missing, returning to default workspace.`,
-          "warning",
-        );
-      }
-    }
   });
 }
