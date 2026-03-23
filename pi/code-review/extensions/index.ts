@@ -59,11 +59,10 @@ type FindingAction =
   | { type: "stop" };
 
 /** Result from runReviews — includes raw response text for diagnostics */
-type ReviewResult = {
-  findings: Finding[];
-  /** Total characters of LLM response text across all skills */
-  totalResponseLength: number;
-} | null;
+type ReviewResult =
+  | { ok: true; findings: Finding[]; totalResponseLength: number }
+  | { ok: false; cancelled: true }
+  | { ok: false; cancelled: false; error: string };
 
 /** Context available to review functions from the extension framework. */
 export interface ReviewContext {
@@ -285,8 +284,12 @@ export function registerReviewCommand(
 
       const reviewResult = await runReviewSkills(pi, ctx, skills, codeContext);
 
-      if (reviewResult === null) {
-        ctx.ui.notify("Review cancelled", "info");
+      if (!reviewResult.ok) {
+        if (reviewResult.cancelled) {
+          ctx.ui.notify("Review cancelled", "info");
+        } else {
+          ctx.ui.notify(`Review failed: ${reviewResult.error}`, "error");
+        }
         return;
       }
 
@@ -547,7 +550,7 @@ async function runReviews(
         theme,
         `Running ${skills.length} review${skills.length > 1 ? "s" : ""}...`,
       );
-      loader.onAbort = () => done(null);
+      loader.onAbort = () => done({ ok: false, cancelled: true });
 
       const doReviews = async () => {
         const findings: Finding[] = [];
@@ -588,7 +591,7 @@ async function runReviews(
           );
 
           if (response.stopReason === "aborted") {
-            return null;
+            return { ok: false as const, cancelled: true as const };
           }
 
           const responseText = extractResponseText(response.content);
@@ -597,14 +600,15 @@ async function runReviews(
           findings.push(...parseFindings(responseText, skill.name));
         }
 
-        return { findings, totalResponseLength };
+        return { ok: true as const, findings, totalResponseLength };
       };
 
       doReviews()
         .then(done)
         .catch((err) => {
           console.error("Review failed:", err);
-          done(null);
+          const message = err instanceof Error ? err.message : String(err);
+          done({ ok: false, cancelled: false, error: message });
         });
 
       return loader;

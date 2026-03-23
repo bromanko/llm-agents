@@ -46,6 +46,7 @@ Every ExecPlan must satisfy all of the following:
 - **Safe and reversible.** The plan must account for blast radius, rollout, failure detection, and rollback or containment where relevant.
 - **A living document.** Contributors must revise it as progress is made, as discoveries occur, and as design decisions are finalized. Each revision must remain fully self-contained.
 - **Novice-enabling.** A complete novice must be able to implement the feature end-to-end without prior knowledge of the repo.
+- **Portable.** All file references and paths must be repository-relative, never absolute. The plan may be implemented in any workspace, worktree, or checkout location.
 - **Jargon-free.** Define every term of art in plain language, or do not use it.
 
 ### Who This Plan Is For
@@ -89,7 +90,7 @@ If you cannot answer these, keep researching before writing the final plan.
 
 **Embed all required knowledge.** The agent executing the plan can list files, read files, search, run the project, and run tests. It does not know any prior context and cannot infer what you meant from earlier milestones. Repeat any assumption you rely on. Do not point to external blogs or docs; if knowledge is required, embed it in the plan itself in your own words. If a plan builds upon a prior plan that is checked in, incorporate the necessary context directly.
 
-**Specify repository context explicitly.** Name files with full repository-relative paths, name functions and modules precisely, and describe where new files should be created. If touching multiple areas, include a short orientation paragraph that explains how those parts fit together so a novice can navigate confidently. When running commands, show the working directory and exact command line. When outcomes depend on environment, state the assumptions and provide alternatives when reasonable.
+**Specify repository context explicitly.** Name files with full repository-relative paths, name functions and modules precisely, and describe where new files should be created. **Never use absolute paths.** The plan may be implemented in any workspace, worktree, or checkout location; absolute paths break portability. Every file reference, command example, and configuration value must use paths relative to the repository root. If touching multiple areas, include a short orientation paragraph that explains how those parts fit together so a novice can navigate confidently. When running commands, show the working directory and exact command line. When outcomes depend on environment, state the assumptions and provide alternatives when reasonable.
 
 **Design for small, safe, falsifiable increments.** Prefer milestones that prove the hardest unknowns early, keep the system working at each checkpoint, and can be validated independently. Do not postpone all the risk to the end. If feasibility is uncertain, write a prototype or spike milestone before a broad refactor.
 
@@ -139,7 +140,7 @@ Assume the developer will not invent good tests on their own. The plan must spec
 
 Every new behavior needs at least one test specified in the plan — not "write tests for this" but "write a test that calls `parse("")` and asserts it returns `Err(EmptyInput)`." Edge cases and negative cases must be called out explicitly. The developer should not have to think about what the edge cases are; enumerate them.
 
-Name test file locations with full paths. State the test runner command, including how to run a single test or a subset. Describe expected test output (pass/fail counts, specific assertion messages) so the developer knows what "working" looks like. When a test should fail before implementation (the red phase of TDD), say so and describe what the failure looks like. Include integration or end-to-end validation steps where appropriate — not just unit tests.
+Name test file locations with full repository-relative paths. State the test runner command, including how to run a single test or a subset. Describe expected test output (pass/fail counts, specific assertion messages) so the developer knows what "working" looks like. When a test should fail before implementation (the red phase of TDD), say so and describe what the failure looks like. Include integration or end-to-end validation steps where appropriate — not just unit tests.
 
 For every new or modified test file, specify the fixture or setup data, the exact function, route, or UI path to exercise, the concrete inputs, and the assertion values. For UI tests, name the DOM queries and expected text or attributes. For protocol or transport tests, name the exact messages, close codes, rejection reasons, or lifecycle ordering being verified. For migrations and extractions, add parity tests for every retained user-visible surface — routes, CLI commands, exports, diagnostics, and demo flows — so the plan can catch a half-migrated system that still passes lower-level unit tests.
 
@@ -251,7 +252,7 @@ will detect the problem early, reduce the risk, and recover safely if needed.
 ## Context and Orientation
 
 Describe the current state relevant to this task as if the reader knows nothing. Name
-the key files and modules by full path. Define any non-obvious term you will use. Do
+the key files and modules by full repository-relative path. Define any non-obvious term you will use. Do
 not refer to prior plans.
 
 ## Preconditions and Verified Facts
@@ -278,7 +279,7 @@ observe it working, and why this milestone comes in this order.
 
 Describe, in prose, the sequence of edits and additions. For each edit, name the file
 and location (function, module) and what to insert or change. Keep it concrete and
-minimal. If code is being moved or split, name the source path, destination path, and
+minimal. If code is being moved or split, name the source and destination with repository-relative paths, and
 what remains behind.
 
 ## Concrete Steps

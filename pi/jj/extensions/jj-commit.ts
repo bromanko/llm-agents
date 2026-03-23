@@ -225,12 +225,14 @@ export function createJjCommitHandler(
       ctx.ui.notify(`⚠ ${warning}`, "warning");
     }
 
-    // Recovery guidance is useful for real failures, but noisy for no-op outcomes.
+    // Recovery guidance is useful for real failures, but noisy for no-op outcomes
+    // or auth/configuration errors where no jj operations were performed.
     const shouldShowRecoveryGuidance =
       !result.committed
       && !args.dryRun
       && result.summary !== "Nothing to commit."
-      && result.summary !== "All changes were absorbed into ancestor commits.";
+      && result.summary !== "All changes were absorbed into ancestor commits."
+      && !result.summary.startsWith("No model available");
 
     if (shouldShowRecoveryGuidance) {
       ctx.ui.notify(
@@ -240,7 +242,10 @@ export function createJjCommitHandler(
     }
 
     // Show summary
-    ctx.ui.notify(result.summary, "info");
+    const summaryLevel = result.committed || result.summary === "Nothing to commit." || result.summary === "All changes were absorbed into ancestor commits."
+      ? "info"
+      : "error";
+    ctx.ui.notify(result.summary, summaryLevel);
 
     // Show commit messages
     if (result.messages.length > 0) {

@@ -108,6 +108,7 @@ The plan must be concrete enough for a developer with only the plan and the work
 - Steps are small, unambiguous actions that take roughly 2–5 minutes and do not require the implementer to invent design details.
 - Where applicable, steps follow the TDD cycle: write failing test, run it, make it pass, rerun tests, commit.
 - Each step names the exact file(s) to touch, with full repository-relative paths, and states what to add, change, or remove.
+- No absolute paths appear anywhere in the plan. The plan may be implemented in any workspace, worktree, or checkout location; all paths must be relative to the repository root.
 - Build, test, and run commands are stated in full — the working directory, the exact command, and the expected output.
 - Environment assumptions (OS, language version, installed tools, environment variables) are stated or can be inferred from the repo.
 - Commit points are called out explicitly, and the system remains in a working state at each commit point.
@@ -119,7 +120,7 @@ Assume the developer will not invent good tests on their own. The plan must spec
 - Every new behavior has at least one test specified in the plan — not "write tests for this" but "write a test that calls `parse("")` and asserts it returns `Err(EmptyInput)`."
 - The tests cover the core claim of the plan, not just helper functions or happy paths.
 - Edge cases and negative cases are called out explicitly. The developer should not have to think about what the edge cases are.
-- Test file locations are named with full paths.
+- Test file locations are named with full repository-relative paths.
 - The test runner command is stated, including how to run a single test or a subset.
 - Expected test output (pass/fail counts, specific assertion messages) is described so the developer knows what "working" looks like.
 - When a test should fail before implementation (red phase of TDD), the plan says so and describes what the failure looks like.

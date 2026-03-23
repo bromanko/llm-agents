@@ -86,7 +86,7 @@ test("pipeline: fails gracefully when no model available", async () => {
   const ctx = createBasicContext({ jj: jj as any });
   const result = await runCommitPipeline(ctx);
   assert.equal(result.committed, false);
-  assert.ok(result.summary.includes("No commit proposal could be generated"));
+  assert.ok(result.summary.includes("No model available"));
 });
 
 test("pipeline: does not fetch diff/stat when agentic analysis is not used", async () => {
