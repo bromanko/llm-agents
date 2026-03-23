@@ -14,7 +14,7 @@ import {
   type InputEvent,
   type Theme,
 } from "@mariozechner/pi-coding-agent";
-import { Markdown, Text } from "@mariozechner/pi-tui";
+import { Markdown, Text } from "../../lib/tui-shim.ts";
 import { Type } from "@sinclair/typebox";
 
 import {
