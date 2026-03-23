@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth } from "@mariozechner/pi-tui";
 import { fetchUrl, type FetchRequest, type FetchResponse } from "../lib/fetch-core.ts";
+import { truncateToWidth } from "./truncate.ts";
 
 export interface FetchToolParams {
   url: string;
