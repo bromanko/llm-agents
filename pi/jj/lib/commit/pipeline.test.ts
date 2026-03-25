@@ -63,6 +63,7 @@ function createBasicContext(overrides: Partial<PipelineContext> = {}): PipelineC
     cwd: "/tmp/test-repo",
     args: { dryRun: false, push: false, noChangelog: true, noAbsorb: false },
     availableModels: [],
+    configuredModel: undefined,
     sessionModel: undefined,
     hasApiKey: async () => false,
     ...overrides,
@@ -86,7 +87,8 @@ test("pipeline: fails gracefully when no model available", async () => {
   const ctx = createBasicContext({ jj: jj as any });
   const result = await runCommitPipeline(ctx);
   assert.equal(result.committed, false);
-  assert.ok(result.summary.includes("No model available"));
+  assert.ok(result.summary.includes("No compatible jj-commit model is available"));
+  assert.ok(result.summary.includes("~/.pi/agent/jj-commit.json"));
 });
 
 test("pipeline: does not fetch diff/stat when agentic analysis is not used", async () => {

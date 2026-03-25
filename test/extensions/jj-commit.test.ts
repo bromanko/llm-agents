@@ -77,6 +77,7 @@ test("jj-commit handler: exits early in non-jj repo", async () => {
 
   registerJjCommitCommand(pi, {
     isJjRepo: () => false,
+    loadJjCommitConfig: () => ({}),
     ControlledJj: class {
       constructor(_cwd: string) {
         throw new Error("ControlledJj should not be constructed for non-repo path");
@@ -127,6 +128,7 @@ test("jj-commit handler: --push defaults bookmark to main when omitted", async (
 
   registerJjCommitCommand(pi, {
     isJjRepo: () => true,
+    loadJjCommitConfig: () => ({}),
     ControlledJj: MockJj as any,
     runCommitPipeline: async (ctx: any) => {
       pipelineArgs = ctx.args;
@@ -192,6 +194,7 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
 
   registerJjCommitCommand(pi, {
     isJjRepo: () => true,
+    loadJjCommitConfig: () => ({}),
     ControlledJj: class {
       constructor(_cwd: string) { }
     } as any,
@@ -264,6 +267,7 @@ test("jj-commit handler: OAuth session model is considered available without an 
   let resolvedModel: any;
   registerJjCommitCommand(pi, {
     isJjRepo: () => true,
+    loadJjCommitConfig: () => ({}),
     ControlledJj: class {
       constructor(_cwd: string) { }
     } as any,
@@ -298,6 +302,47 @@ test("jj-commit handler: OAuth session model is considered available without an 
   assert.deepStrictEqual(resolvedModel, sessionModel);
 });
 
+test("jj-commit handler: passes configured model into the pipeline", async () => {
+  const registrations: Array<{ name: string; command: any }> = [];
+
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  registerJjCommitCommand(pi, {
+    isJjRepo: () => true,
+    loadJjCommitConfig: () => ({
+      model: { provider: "dbx-bedrock", id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0" },
+    }),
+    ControlledJj: class {
+      constructor(_cwd: string) { }
+    } as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      assert.deepStrictEqual(pipelineCtx.configuredModel, {
+        provider: "dbx-bedrock",
+        id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        name: "dbx-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      });
+      return {
+        committed: false,
+        summary: "Nothing to commit.",
+        warnings: [],
+        messages: [],
+      };
+    },
+    pushWithBookmark: async () => ({ success: true }),
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: undefined,
+    model: undefined,
+  });
+});
+
 test("jj-commit handler: does not show recovery guidance for no-op outcomes", async () => {
   const registrations: Array<{ name: string; command: any }> = [];
 
@@ -309,6 +354,7 @@ test("jj-commit handler: does not show recovery guidance for no-op outcomes", as
 
   registerJjCommitCommand(pi, {
     isJjRepo: () => true,
+    loadJjCommitConfig: () => ({}),
     ControlledJj: class {
       constructor(_cwd: string) { }
     } as any,

@@ -31,6 +31,8 @@ export interface PipelineContext {
 
   /** All models available in the registry */
   availableModels: ModelCandidate[];
+  /** Model configured in jj-commit settings */
+  configuredModel?: ModelCandidate;
   /** Currently active session model */
   sessionModel?: ModelCandidate;
   /** Check if an API key exists */
@@ -145,6 +147,7 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
   progress("Resolving model...");
   const modelResult = await resolveCommitModel({
     availableModels: ctx.availableModels,
+    configuredModel: ctx.configuredModel,
     sessionModel: ctx.sessionModel,
     hasApiKey: ctx.hasApiKey,
   });
@@ -200,7 +203,7 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
     if (!modelResult.model) {
       return {
         committed: false,
-        summary: "No model available — check that you are logged in and have a valid API key configured.",
+        summary: "No compatible jj-commit model is available. Configure ~/.pi/agent/jj-commit.json or .pi/jj-commit.json, or switch the session model.",
         warnings,
         messages,
       };

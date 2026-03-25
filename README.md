@@ -27,6 +27,20 @@ Tools and commands for working with Jujutsu (jj) version control.
 - `/jj:commit` - Analyze jj status and create logical commits with descriptive messages
 - `/jj:workspace-cleanup` - Clean up empty jujutsu workspaces
 
+**Configuration:**
+- Global: `~/.pi/agent/jj-commit.json`
+- Project: `.pi/jj-commit.json`
+- Project config overrides global config
+
+Example:
+```json
+{
+  "model": "dbx-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+}
+```
+
+The configured `provider/id` must match the exact model shown by pi's model selector.
+
 **Hooks:**
 - Blocks mutating git commands in jujutsu repositories, guiding you to jj equivalents
 

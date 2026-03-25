@@ -21,6 +21,24 @@ const otherModel: ModelCandidate = {
   name: "Claude 3.5 Haiku",
 };
 
+test("resolveCommitModel: prefers configured model over built-in preferred and session model", async () => {
+  const configuredModel: ModelCandidate = {
+    provider: "dbx-bedrock",
+    id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    name: "dbx-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  };
+
+  const result = await resolveCommitModel({
+    availableModels: [otherModel, sonnet46, sessionModel, configuredModel],
+    configuredModel,
+    sessionModel,
+    hasApiKey: async (m) => m.id === configuredModel.id,
+  });
+
+  assert.deepStrictEqual(result.model, configuredModel);
+  assert.equal(result.warnings.length, 0);
+});
+
 test("resolveCommitModel: prefers Sonnet 4.6 when available with API key", async () => {
   const result = await resolveCommitModel({
     availableModels: [otherModel, sonnet46, sessionModel],
@@ -67,7 +85,7 @@ test("resolveCommitModel: returns null when both preferred and session model fai
   assert.equal(result.model, null);
   assert.ok(result.warnings.length >= 2);
   assert.ok(
-    result.warnings.some((w) => w.includes("no model available")),
+    result.warnings.some((w) => w.includes("No compatible jj-commit model is available")),
   );
 });
 
@@ -81,6 +99,24 @@ test("resolveCommitModel: returns null when no models available and no session m
   assert.equal(result.model, null);
   assert.ok(result.warnings.some((w) => w.includes("not found in registry")));
   assert.ok(result.warnings.some((w) => w.includes("No session model")));
+});
+
+test("resolveCommitModel: skips incompatible configured model and falls back to session model", async () => {
+  const result = await resolveCommitModel({
+    availableModels: [sonnet46, sessionModel],
+    configuredModel: {
+      provider: "openai-codex",
+      id: "gpt-5.4",
+      name: "openai-codex/gpt-5.4",
+    },
+    sessionModel,
+    hasApiKey: async (m) => m.id === sessionModel.id,
+  });
+
+  assert.deepStrictEqual(result.model, sessionModel);
+  assert.ok(
+    result.warnings.some((w) => w.includes("Configured model openai-codex/gpt-5.4 uses an incompatible provider")),
+  );
 });
 
 test("resolveCommitModel: matches any Sonnet 4.6 variant ID", async () => {

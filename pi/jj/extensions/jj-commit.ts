@@ -16,6 +16,10 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import {
+  loadJjCommitConfig,
+  type NormalizedJjCommitConfig,
+} from "../lib/commit/config.ts";
 import { isJjRepo } from "../lib/utils.ts";
 import { ControlledJj } from "../lib/commit/jj.ts";
 import { runCommitPipeline, pushWithBookmark } from "../lib/commit/pipeline.ts";
@@ -90,6 +94,7 @@ export async function runModelInference(
 
 interface JjCommitCommandDeps {
   isJjRepo: (cwd: string) => boolean;
+  loadJjCommitConfig: typeof loadJjCommitConfig;
   ControlledJj: new (cwd: string) => ControlledJj;
   runCommitPipeline: typeof runCommitPipeline;
   pushWithBookmark: typeof pushWithBookmark;
@@ -97,6 +102,7 @@ interface JjCommitCommandDeps {
 
 const defaultDeps: JjCommitCommandDeps = {
   isJjRepo,
+  loadJjCommitConfig,
   ControlledJj,
   runCommitPipeline,
   pushWithBookmark,
@@ -129,6 +135,15 @@ export function createJjCommitHandler(
 
     // Parse command arguments
     const args = parseArgs(argsStr ?? "");
+
+    let jjCommitConfig: NormalizedJjCommitConfig;
+    try {
+      jjCommitConfig = deps.loadJjCommitConfig(ctx.cwd);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Invalid jj-commit config: ${message}`, "error");
+      return;
+    }
 
     const jj = new deps.ControlledJj(ctx.cwd);
 
@@ -211,6 +226,13 @@ export function createJjCommitHandler(
       cwd: ctx.cwd,
       args,
       availableModels,
+      configuredModel: jjCommitConfig.model
+        ? {
+          provider: jjCommitConfig.model.provider,
+          id: jjCommitConfig.model.id,
+          name: `${jjCommitConfig.model.provider}/${jjCommitConfig.model.id}`,
+        }
+        : undefined,
       sessionModel,
       hasApiKey,
       onProgress,
@@ -232,7 +254,7 @@ export function createJjCommitHandler(
       && !args.dryRun
       && result.summary !== "Nothing to commit."
       && result.summary !== "All changes were absorbed into ancestor commits."
-      && !result.summary.startsWith("No model available");
+      && !result.summary.startsWith("No compatible jj-commit model is available");
 
     if (shouldShowRecoveryGuidance) {
       ctx.ui.notify(
