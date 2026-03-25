@@ -37,6 +37,33 @@ Tools and commands for working with Jujutsu (jj) version control.
 
 ---
 
+### git
+AI-assisted Git commit workflow with optional hunk-level split commits.
+
+**Commands:**
+- `/git-commit` - Analyze Git changes, propose commit messages, and split mixed changes by file or hunk
+
+**Configuration:**
+- Global: `~/.pi/agent/git-commit.json`
+- Project: `.pi/git-commit.json`
+- Project config overrides global config
+
+Example:
+```json
+{
+  "model": "anthropic/claude-opus-4-1"
+}
+```
+
+The configured `provider/id` must match the exact model shown by pi's model selector.
+
+**Installation:**
+```shell
+/plugin install git@bromanko-llm-agents
+```
+
+---
+
 ### word-explorer
 Comprehensive word exploration with dictionary definitions, etymology, and literary examples.
 
