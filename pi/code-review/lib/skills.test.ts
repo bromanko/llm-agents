@@ -6,6 +6,7 @@ import * as path from "node:path";
 
 import {
   discoverReviewSkills,
+  extractFilesFromDiff,
   filterDiffByExtensions,
   filterSkills,
   getLanguageExtensions,
@@ -341,4 +342,27 @@ test("discoverReviewSkills includes a skill from every root even when the name i
     fs.rmSync(root1, { recursive: true, force: true });
     fs.rmSync(root2, { recursive: true, force: true });
   }
+});
+
+// ── extractFilesFromDiff tests ────────────────────────────────────────────
+
+test("extractFilesFromDiff extracts file paths from a multi-file diff", () => {
+  const diff = TS_A_DIFF_SECTION + TS_B_DIFF_SECTION + README_DIFF_SECTION;
+  const files = extractFilesFromDiff(diff);
+  assert.deepEqual(files, ["src/a.ts", "src/b.ts", "README.md"]);
+});
+
+test("extractFilesFromDiff returns empty array for empty diff", () => {
+  assert.deepEqual(extractFilesFromDiff(""), []);
+});
+
+test("extractFilesFromDiff deduplicates repeated file paths", () => {
+  const diff = TS_A_DIFF_SECTION + TS_A_DIFF_SECTION;
+  const files = extractFilesFromDiff(diff);
+  assert.deepEqual(files, ["src/a.ts"]);
+});
+
+test("extractFilesFromDiff returns single file for a single-section diff", () => {
+  const files = extractFilesFromDiff(GLEAM_DIFF_SECTION);
+  assert.deepEqual(files, ["src/main.gleam"]);
 });

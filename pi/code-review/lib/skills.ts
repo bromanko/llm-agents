@@ -144,6 +144,27 @@ export function filterDiffByExtensions(
 }
 
 /**
+ * Extract unique file paths from a unified diff (git format).
+ *
+ * Each file section starts with `diff --git a/... b/...`; we pull out the
+ * b-side path (the destination / current name).
+ */
+export function extractFilesFromDiff(diff: string): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+
+  for (const line of diff.split("\n")) {
+    const match = line.match(/^diff --git a\/.+ b\/(.+)/);
+    if (match && !seen.has(match[1])) {
+      seen.add(match[1]);
+      files.push(match[1]);
+    }
+  }
+
+  return files;
+}
+
+/**
  * Known skills directories relative to the repository root.
  * We resolve from the extension's own location.
  */
