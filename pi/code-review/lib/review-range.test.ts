@@ -6,6 +6,7 @@ import {
   parseReviewArgs,
   REVIEW_USAGE,
   sanitizeForDisplay,
+  translateJjToGitRange,
   validateRange,
 } from "./review-range.ts";
 
@@ -106,6 +107,36 @@ test("sanitizeForDisplay escapes HTML entities", () => {
   assert.equal(sanitizeForDisplay("<>"), "&#60;&#62;");
 });
 
+// --- translateJjToGitRange tests ---
+
+test("translateJjToGitRange replaces standalone @ with HEAD", () => {
+  assert.equal(translateJjToGitRange("@"), "HEAD");
+});
+
+test("translateJjToGitRange replaces @ in range start position", () => {
+  assert.equal(translateJjToGitRange("@..main"), "HEAD..main");
+});
+
+test("translateJjToGitRange replaces @ in range end position", () => {
+  assert.equal(translateJjToGitRange("main..@"), "main..HEAD");
+});
+
+test("translateJjToGitRange replaces @ in both positions", () => {
+  assert.equal(translateJjToGitRange("@..@"), "HEAD..HEAD");
+});
+
+test("translateJjToGitRange leaves plain git ranges untouched", () => {
+  assert.equal(translateJjToGitRange("main..HEAD"), "main..HEAD");
+  assert.equal(translateJjToGitRange("abc123"), "abc123");
+  assert.equal(translateJjToGitRange("HEAD~3"), "HEAD~3");
+  assert.equal(translateJjToGitRange("v1.0.0"), "v1.0.0");
+});
+
+test("translateJjToGitRange does not replace @ embedded in other text", () => {
+  // @ inside a longer token is not jj syntax
+  assert.equal(translateJjToGitRange("user@branch"), "user@branch");
+});
+
 test("gatherRangeDiff prefers jj when jj command succeeds", async () => {
   const calls: Array<{ command: string; args: string[] | undefined }> = [];
   const pi = {
@@ -137,6 +168,11 @@ test("gatherRangeDiff prefers jj when jj command succeeds", async () => {
   assert.deepEqual(calls[0], {
     command: "jj",
     args: ["diff", "-r", "main..@", "--git"],
+  });
+  // git receives translated range (@ → HEAD)
+  assert.deepEqual(calls[1], {
+    command: "git",
+    args: ["diff", "main..HEAD"],
   });
 });
 
@@ -262,6 +298,33 @@ test("gatherRangeDiff with @ range falls back to git diff HEAD", async () => {
   assert.deepEqual(calls[1], {
     command: "git",
     args: ["diff", "HEAD"],
+  });
+});
+
+test("gatherRangeDiff with main..@ translates to git diff main..HEAD", async () => {
+  const calls: Array<{ command: string; args: string[] | undefined }> = [];
+  const pi = {
+    async exec(command: string, args?: string[]) {
+      calls.push({ command, args });
+      if (command === "jj") {
+        return { code: 1, stdout: "", stderr: "not a jj repo", killed: false };
+      }
+      return {
+        code: 0,
+        stdout: "diff --git a/file.ts b/file.ts\n",
+        stderr: "",
+        killed: false,
+      };
+    },
+  };
+
+  const result = await gatherRangeDiff(pi, { cwd: "/tmp/repo" }, "main..@");
+
+  assert.equal(result.source, "git");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], {
+    command: "git",
+    args: ["diff", "main..HEAD"],
   });
 });
 

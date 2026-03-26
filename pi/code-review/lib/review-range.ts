@@ -133,16 +133,29 @@ function summarizeCommandFailure(command: string, result: {
   return `${command}: ${truncated}${raw.length > 200 ? "…" : ""}`;
 }
 
+/**
+ * Translate a jj-style `@` to git's `HEAD` in a revision range.
+ *
+ * `@` is jj syntax for the current working-copy commit; git uses `HEAD`.
+ * This replaces standalone `@` tokens (delimited by `..` boundaries or
+ * start/end of string) but leaves email-like or other embedded `@` untouched.
+ */
+export function translateJjToGitRange(range: string): string {
+  return range.replace(/(^|(?:\.\.))@(?=(\.\.)|$)/g, "$1HEAD");
+}
+
 function getGitArgsForRange(range: string): string[] {
-  if (range === "@") {
+  const gitRange = translateJjToGitRange(range);
+
+  if (gitRange === "HEAD") {
     return ["diff", "HEAD"];
   }
 
-  if (range.includes("..")) {
-    return ["diff", range];
+  if (gitRange.includes("..")) {
+    return ["diff", gitRange];
   }
 
-  return ["show", "--format=", "--patch", range];
+  return ["show", "--format=", "--patch", gitRange];
 }
 
 /**
