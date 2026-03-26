@@ -39,6 +39,7 @@ import {
 } from "../lib/review-range.ts";
 import {
   discoverReviewSkills,
+  extractFilesFromDiff,
   filterDiffByExtensions,
   filterSkills,
   getLanguageExtensions,
@@ -280,6 +281,15 @@ export function registerReviewCommand(
           "warning",
         );
         return;
+      }
+
+      const reviewFiles = extractFilesFromDiff(codeContext);
+      if (reviewFiles.length > 0) {
+        const fileList = reviewFiles.map((f) => `  ${f}`).join("\n");
+        ctx.ui.notify(
+          `Reviewing ${reviewFiles.length} file${reviewFiles.length > 1 ? "s" : ""}:\n${fileList}`,
+          "info",
+        );
       }
 
       const reviewResult = await runReviewSkills(pi, ctx, skills, codeContext);
