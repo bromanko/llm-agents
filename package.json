@@ -25,7 +25,8 @@
       "./pi/lsp/extensions",
       "./pi/tmux-titles/extensions",
       "./pi/web/extensions",
-      "./pi/http-bridge/extensions"
+      "./pi/http-bridge/extensions",
+      "./pi/recap/extensions"
     ],
     "skills": [
       "./skills"
