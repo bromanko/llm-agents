@@ -19,6 +19,10 @@ export type PathValidationResult =
   | { valid: true; resolved: string; kind: PathKind }
   | { valid: false; suggestions: string[] };
 
+export type MultiPathValidationResult =
+  | { valid: true; resolved: string[] }
+  | { valid: false; failedPath: string; suggestions: string[] };
+
 export interface ResultEnvelope {
   mode: string;
   scope: string;
@@ -33,7 +37,7 @@ export interface ResultEnvelope {
 export interface GrepToolParams {
   pattern?: string;
   anyOf?: string[];
-  path?: string;
+  path?: string | string[];
   glob?: string;
   type?: string;
   ignoreCase?: boolean;
@@ -75,3 +79,8 @@ export interface RgResult {
 }
 
 export type RgExecutor = (args: string[], cwd?: string) => Promise<RgResult>;
+
+export type SinglePathValidator = (
+  requestedPath: string | undefined,
+  root: string,
+) => Promise<PathValidationResult>;
