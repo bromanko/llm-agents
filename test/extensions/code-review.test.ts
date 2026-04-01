@@ -7,6 +7,8 @@ import {
   extractResponseText,
   matchesFixThreshold,
   registerReviewCommand,
+  resolveReviewModelObject,
+  resolveReviewRequestAuth,
   type ReviewContext,
   type ReviewDependencies,
 } from "../../pi/code-review/extensions/index.ts";
@@ -476,6 +478,55 @@ test("extractResponseText handles content with no text blocks", () => {
   ];
   const result = extractResponseText(content);
   assert.equal(result, "");
+});
+
+test("resolveReviewModelObject prefers registry model for object session models", () => {
+  const registryModel = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+  };
+
+  const ctx: ReviewContext = {
+    ...createTestCtx().ctx,
+    model: {
+      provider: "openai-codex",
+      id: "gpt-5.4",
+      name: "session-model",
+    },
+    modelRegistry: {
+      find: () => registryModel,
+    },
+  };
+
+  assert.equal(resolveReviewModelObject(ctx), registryModel);
+});
+
+test("resolveReviewRequestAuth uses getApiKeyAndHeaders when available", async () => {
+  const model = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+  };
+
+  const auth = await resolveReviewRequestAuth(
+    {
+      ...createTestCtx().ctx,
+      model,
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => ({
+          ok: true as const,
+          apiKey: "token-123",
+          headers: { Authorization: "Bearer token-123" },
+        }),
+      },
+    },
+    model,
+  );
+
+  assert.deepEqual(auth, {
+    apiKey: "token-123",
+    headers: { Authorization: "Bearer token-123" },
+  });
 });
 
 // --- Finding 18: no-UI early return path ---
