@@ -251,7 +251,7 @@ node --experimental-strip-types --test path/to/file.test.ts
 
 Test files are co-located with the module under test and named `<module>.test.ts` (or `.test.js` for existing JavaScript modules).
 
-**Exception: extension directories.** Never place test files or non-extension support modules inside directories registered as `pi.extensions` in `package.json` (e.g. `packages/jj/extensions/`, `shared/extensions/`). Pi auto-discovers every `*.ts` file in those directories and loads them as extensions — test files will execute their `test()` calls on import, and library modules without a default export will fail to load. Place extension tests in `test/extensions/` and shared library code in `shared/lib/` (or a `lib/` directory within the package).
+**Exception: extension directories.** Never place test files or non-extension support modules inside directories registered as `pi.extensions` in `package.json` (e.g. `pi/jj/extensions/`, `pi/web/extensions/`). Pi auto-discovers every `*.ts` file in those directories and loads them as extensions — test files will execute their `test()` calls on import, and library modules without a default export will fail to load. Place extension tests in `test/extensions/` and shared library code in a package-local `lib/` directory (for example `pi/web/lib/`).
 
 For extension tests, use the shared mock helper in `test/helpers.ts`:
 
@@ -277,9 +277,28 @@ test("registers and handles tool_call", async () => {
 
 No external testing dependencies are required. Tests use Node.js built-ins (`node:test`, `node:assert/strict`) and TypeScript support from `--experimental-strip-types`.
 
+## Pi enhanced read tool
+
+This repository now includes a first-party `read` override at `pi/files/extensions/read.ts`.
+
+- **Purpose:** keep the familiar `read` tool while adding direct line targeting for common paging workflows.
+- **Supported parameters:** `path`, `offset`, `limit`, `endLine`, `tail`, `aroundLine`, and `context`.
+- **Examples:**
+  - `read package.json endLine=5`
+  - `read package.json tail=5`
+  - `read README.md aroundLine=280 context=2`
+- **Image behavior:** known image extensions (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) still delegate to pi's built-in image read pipeline.
+- **Prompt guidance:** prefer `endLine`, `tail`, and `aroundLine` over `head`, `tail`, or `sed` when you need a targeted read.
+
+Run pi with this extension directly:
+
+```bash
+pi -e ./pi/files/extensions/read.ts
+```
+
 ## Pi fetch tool (MVP)
 
-This repository now includes a first-party `fetch` extension at `shared/extensions/fetch.ts`.
+This repository now includes a first-party `fetch` extension at `pi/web/extensions/fetch.ts`.
 
 - **Purpose:** fetch HTTP(S) URLs and return model-readable output with metadata (`URL`, optional `Final URL`, `Status`, `Content-Type`, `Method`) plus a readable body.
 - **MVP content handling:**
@@ -294,12 +313,12 @@ This repository now includes a first-party `fetch` extension at `shared/extensio
 Run pi with this extension directly:
 
 ```bash
-pi --extension ./shared/extensions/fetch.ts
+pi -e ./pi/web/extensions/fetch.ts
 ```
 
 ## Pi web_search tool (Brave-first v1)
 
-This repository now includes a first-party `web_search` extension at `shared/extensions/web-search/index.ts`.
+This repository now includes a first-party `web_search` extension at `pi/web/extensions/web-search/index.ts`.
 
 - **Purpose:** discover current web sources via Brave Search and return bounded, citation-friendly output.
 - **Provider scope (v1):** `brave` only.
@@ -313,17 +332,17 @@ This repository now includes a first-party `web_search` extension at `shared/ext
   - `limit` (clamped to `1..10`, default `5`)
   - `enrich` (`boolean`, default `false`)
   - `fetchTop` (clamped to `0..5`, default `0`)
-- **Optional enrichment:** when `enrich=true`, top results are fetched through the local fetch pipeline (`shared/lib/fetch-core.ts`) and appended as bounded excerpts.
+- **Optional enrichment:** when `enrich=true`, top results are fetched through the local fetch pipeline (`pi/web/lib/fetch-core.ts`) and appended as bounded excerpts.
 
 Run pi with this extension directly:
 
 ```bash
-pi --extension ./shared/extensions/web-search/index.ts
+pi -e ./pi/web/extensions/web-search/index.ts
 ```
 
 ## Pi lsp tool
 
-This repository includes a universal LSP extension at `packages/lsp/extensions/lsp.ts` that provides automatic diagnostics and code intelligence for any language with a configured LSP server.
+This repository includes a universal LSP extension at `pi/lsp/extensions/lsp.ts` that provides automatic diagnostics and code intelligence for any language with a configured LSP server.
 
 ### What it does
 
@@ -344,7 +363,7 @@ This repository includes a universal LSP extension at `packages/lsp/extensions/l
 
 The extension merges configuration from three layers (lowest to highest precedence):
 
-1. Built-in defaults (`packages/lsp/lib/defaults.json`)
+1. Built-in defaults (`pi/lsp/lib/defaults.json`)
 2. User config (`~/.pi/agent/lsp.json`)
 3. Project config (`.pi/lsp.json`)
 
@@ -381,7 +400,7 @@ Additional servers can be added via config files.
 The extension is auto-loaded when using this repository as a pi package. To run directly:
 
 ```bash
-pi --extension ./packages/lsp/extensions/lsp.ts
+pi -e ./pi/lsp/extensions/lsp.ts
 ```
 
 ### Integration tests
@@ -389,7 +408,7 @@ pi --extension ./packages/lsp/extensions/lsp.ts
 Integration tests require `typescript-language-server` and `typescript` in PATH:
 
 ```bash
-nix develop .#lsp-test -c node --experimental-strip-types --test packages/lsp/test/integration/typescript.e2e.test.ts
+nix develop .#lsp-test -c node --experimental-strip-types --test pi/lsp/test/integration/typescript.e2e.test.ts
 ```
 
 ## License
