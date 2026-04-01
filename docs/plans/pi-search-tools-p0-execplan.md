@@ -159,18 +159,19 @@ milestone.
 
 ## Progress
 
-- [x] (2026-04-01 00:00Z) Verified the repository's root `package.json` currently loads multiple extension directories under `pi/...` and does not yet include `./pi/search/extensions`.
-- [x] (2026-04-01 00:04Z) Verified there is currently no `pi/search` directory in this repository.
+- [x] (2026-04-01 00:00Z) Verified the repository's root `package.json` currently loads multiple extension directories under `pi/...` and did not yet include `./pi/search/extensions`.
+- [x] (2026-04-01 00:04Z) Verified there was no `pi/search` directory in this repository before implementation.
 - [x] (2026-04-01 00:08Z) Verified local package tools in this repository use object-literal schemas and type-only pi imports so plain Node tests remain runnable.
 - [x] (2026-04-01 00:12Z) Verified pi's built-in tool list includes `find` and `grep`, and verified the current built-in input shapes from installed type definitions.
 - [x] (2026-04-01 00:16Z) Chosen P0 scope: repo-local `find` and `grep` overrides with literal-first search, `anyOf`, pagination, ignore controls, and path recovery. Ranking, streaming, structural context, and indexing are deferred.
-- [ ] Scaffold `pi/search` package files, shared library files, and focused tests without enabling the package in root `package.json`.
-- [ ] Implement shared helpers for path normalization, path suggestions, pagination, default skip globs, and result-envelope formatting.
-- [ ] Implement `grep` override with backward-compatible built-in fields plus `anyOf`, `offset`, `outputMode`, `type`, `hidden`, `respectIgnore`, and `regex`.
-- [ ] Implement `find` override with `offset`, `hidden`, and `respectIgnore`, plus the shared result envelope.
-- [ ] Run targeted tests and a full `npm test` pass, then manually smoke-test the overrides.
-- [ ] Add `./pi/search/extensions` to root `package.json` only after the smoke test passes.
-- [ ] Update this plan with final validation evidence and retrospective notes.
+- [x] (2026-04-01 00:47Z) Scaffolded `pi/search`, added `package.json`, shared library modules, and focused tests before enablement in the root package.
+- [x] (2026-04-01 00:55Z) Implemented shared helpers for pagination, path validation and suggestions, skip globs, result envelopes, and injectable `rg` execution.
+- [x] (2026-04-01 01:02Z) Implemented the repo-local `grep` override with built-in-compatible fields plus `anyOf`, `offset`, `outputMode`, `type`, `hidden`, `respectIgnore`, and `regex`.
+- [x] (2026-04-01 01:07Z) Implemented the repo-local `find` override with `offset`, `hidden`, `respectIgnore`, glob wrapping, and the shared result envelope.
+- [x] (2026-04-01 01:12Z) Ran focused `pi/search` tests successfully (`38` passing), then manually smoke-tested real `rg`-backed tool execution for `grep anyOf`, bad-path recovery, and paginated `find` results.
+- [x] (2026-04-01 01:15Z) Added `./pi/search/extensions` to the root `package.json` after the smoke test passed.
+- [x] (2026-04-01 01:19Z) Ran `npm test` before and after enablement; both runs still fail in the pre-existing `test/extensions/code-review.test.ts` suite, while all new `pi/search` tests pass.
+- [x] (2026-04-01 01:23Z) Updated this plan with validation evidence, implementation discoveries, and completion notes.
 
 ## Surprises & Discoveries
 
@@ -180,8 +181,14 @@ milestone.
 - Observation: pi's built-in `find` surface is intentionally tiny.
   Evidence: installed type definitions show built-in `find` only accepts `pattern`, `path`, and `limit`.
 
-- Observation: this repository currently has no first-party search package area to extend.
-  Evidence: repository file listing shows package areas such as `pi/web`, `pi/lsp`, and `pi/jj`, but no `pi/search`.
+- Observation: this repository had no first-party search package area before implementation, so the new package landed as a clean additive feature.
+  Evidence: repository file listing before implementation showed package areas such as `pi/web`, `pi/lsp`, and `pi/jj`, but no `pi/search`.
+
+- Observation: simple basename-only suggestions would not have recovered the deliberate typo `pi/serch` during smoke validation.
+  Evidence: adding a bounded edit-distance fallback produced the expected suggestion `pi/search` while still capping results at three candidates.
+
+- Observation: the repository-wide `npm test` suite currently has unrelated failures in `test/extensions/code-review.test.ts`, so this plan could not produce a globally green tree despite the new package passing all of its own tests.
+  Evidence: both pre-enable and post-enable `npm test` runs ended with 7 failures under `/review gleam ...` assertions and no failures in any `pi/search` test file.
 
 ## Decision Log
 
@@ -209,14 +216,28 @@ milestone.
   Rationale: the package is loaded in normal use, so staged rollout is safer than immediate opt-in by default.
   Date: 2026-04-01
 
+- Decision: supplement basename and prefix suggestions with a small edit-distance fallback capped at three results.
+  Rationale: this preserved the P0 goal of simple bounded suggestions while allowing obvious typos such as `pi/serch` to recover to `pi/search` during smoke validation.
+  Date: 2026-04-01
+
+- Decision: treat direct tool execution with the default `rg` executor as the manual smoke-test mechanism for this implementation pass.
+  Rationale: it exercised the real runtime argument construction and ripgrep integration in this workspace without needing an interactive pi TUI session inside the coding harness.
+  Date: 2026-04-01
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Implementation completed the P0 search package described by this plan. The repository now contains `pi/search/package.json`, shared helpers under `pi/search/lib`, extension entrypoints at `pi/search/extensions/find.ts` and `pi/search/extensions/grep.ts`, focused tests for the pure helpers and extension contracts, and the root `package.json` now enables `./pi/search/extensions` by default.
+
+The user-visible outcomes match the main goals. `grep` now defaults to literal matching, supports structured literal OR search through `anyOf`, exposes pagination through `offset`, can switch to `files_with_matches` or `count`, and returns clearer path errors with candidate suggestions. `find` now pages results, respects the same skip-glob defaults, wraps plain filename terms into globs automatically, and returns the same continuation-friendly result envelope.
+
+Validation was strong at the package level. The focused test run for the new package passed with 38 tests, and direct smoke execution against the real workspace confirmed all three key scenarios: literal `anyOf` content search, typo recovery from `pi/serch` to `pi/search`, and paginated `find` continuation hints. The only acceptance gap is repository-wide greenness: both `npm test` runs still fail in the pre-existing `test/extensions/code-review.test.ts` suite, which appears unrelated to `pi/search` because no new search tests failed before or after enablement.
+
+The main lesson is that repo-local overrides are a good-sized way to improve search ergonomics without inventing a new top-level tool first. The shared helper split also kept the implementation testable. A likely next phase would be improving result ranking or adding a unified `search` tool on top of the same foundations, but that should stay separate from this completed P0 rollout.
 
 ## Context and Orientation
 
 This repository is a pi package workspace. The root `package.json` defines a `pi.extensions`
-array that currently loads these extension directories:
+array that loads these extension directories:
 
 - `./pi/chrome-devtools-mcp/extensions`
 - `./pi/ci-guard/extensions`
@@ -226,6 +247,7 @@ array that currently loads these extension directories:
 - `./pi/jj/extensions`
 - `./pi/live-edit/extensions`
 - `./pi/lsp/extensions`
+- `./pi/search/extensions`
 - `./pi/tmux-titles/extensions`
 - `./pi/web/extensions`
 - `./pi/http-bridge/extensions`
@@ -274,10 +296,10 @@ The root `package.json` currently defines the test script:
 
     node --experimental-strip-types --test '**/*.test.ts' '**/*.test.js'
 
-The root `package.json` does not yet include `./pi/search/extensions` in `pi.extensions`.
+The root `package.json` now includes `./pi/search/extensions` in `pi.extensions`.
 
-There is currently no `pi/search` directory, so this work will be additive rather than a
-refactor of an existing package.
+This implementation added a new `pi/search` directory rather than refactoring an existing
+package.
 
 The repository already includes examples of extension-specific tests and package-local
 libraries in:
@@ -842,23 +864,47 @@ before default enablement.
 
 ## Artifacts and Notes
 
-Add short excerpts here during implementation. At minimum, capture:
+Focused `pi/search` tests:
 
-- one targeted test run showing all `pi/search` tests passing
-- one `npm test` excerpt after enablement
-- one short manual smoke transcript showing `grep anyOf` and paginated `find`
+    ✔ returns all items when result fits in one page (0.596166ms)
+    ✔ accepts a valid existing path unchanged (2.74375ms)
+    ✔ registers a tool named find (0.807417ms)
+    ✔ registers a tool named grep (0.448458ms)
+    ℹ tests 38
+    ℹ pass 38
+    ℹ fail 0
 
-Example shape to replace with real output later:
+Post-enable `npm test` status:
 
-    ✔ pagination returns all items when result fits in one page (0.5ms)
-    ✔ grep registers a tool named grep (0.3ms)
-    ✔ find default args include shared skip globs (0.4ms)
-    ... (≈43 tests total)
-    43 tests passed
-
-    > npm test
+    > @bromanko/llm-agents@1.0.0 test
+    > node --experimental-strip-types --test '**/*.test.ts' '**/*.test.js'
     ...
-    # all repository tests passed
+    ℹ tests 540
+    ℹ pass 533
+    ℹ fail 7
+    ✖ failing tests: test/extensions/code-review.test.ts (...existing /review gleam failures...)
+
+Manual smoke transcript via direct tool execution with the default `rg` executor:
+
+    --- grep anyOf ---
+    Mode: grep content | Scope: .
+    ./test/extensions/block-git-mutating.test.ts:8:import { createMockExtensionAPI, type MockToolCallHandler } from "../helpers.ts";
+    ./README.md:261:import { createMockExtensionAPI } from "../../test/helpers.ts";
+
+    --- grep bad path ---
+    Error: Path not found: pi/serch. Did you mean: pi/search
+
+    --- find page 1 ---
+    Mode: find files | Scope: .
+    ./pi/git/lib/commit/validation.test.ts
+    ./pi/git/lib/commit/config.test.ts
+    Showing 1–5 of 47 results. Use offset=5 to continue.
+
+    --- find page 2 ---
+    Mode: find files | Scope: .
+    ./pi/jj/lib/tmux-workspaces.test.ts
+    ./pi/jj/lib/footer.test.ts
+    Showing 6–10 of 47 results. Use offset=10 to continue.
 
 ## Interfaces and Dependencies
 

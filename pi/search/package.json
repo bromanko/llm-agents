@@ -1,0 +1,18 @@
+{
+  "name": "@bromanko/pi-search",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Repo-local find and grep overrides with pagination and literal-first search",
+  "keywords": [
+    "pi-package"
+  ],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}
