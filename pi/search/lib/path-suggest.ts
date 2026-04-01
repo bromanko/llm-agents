@@ -2,7 +2,7 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { DEFAULT_SKIP_NAMES } from "./constants.ts";
-import type { PathKind, PathValidationResult } from "./types.ts";
+import type { MultiPathValidationResult, PathKind, PathValidationResult, SinglePathValidator } from "./types.ts";
 
 function normalizeSeparators(value: string): string {
   return value.replace(/[\\/]+/g, "/");
@@ -144,4 +144,52 @@ export async function validatePath(requestedPath: string | undefined, root: stri
       suggestions: await suggestPaths(normalizedRequestedPath, root),
     };
   }
+}
+
+const MAX_SEARCH_PATHS = 20;
+
+/**
+ * Normalize a path input (string, string[], or undefined) into an array of
+ * raw path strings.  Returns `["."]` for absent/empty input.
+ */
+function normalizePaths(input: string | string[] | undefined): string[] {
+  if (input == null || input === "") return ["."];
+  if (typeof input === "string") return [input];
+  const filtered = input.filter((p) => p !== "");
+  if (filtered.length === 0) return ["."];
+  return filtered;
+}
+
+/**
+ * Validate one or more search paths.  Every path must pass `validatePath`;
+ * the first failure (in input order) is reported.
+ */
+export async function validatePaths(
+  pathInput: string | string[] | undefined,
+  root: string,
+  singleValidator: SinglePathValidator = validatePath,
+): Promise<MultiPathValidationResult> {
+  const raw = normalizePaths(pathInput);
+
+  if (raw.length > MAX_SEARCH_PATHS) {
+    return {
+      valid: false,
+      failedPath: `<${raw.length} paths>`,
+      suggestions: [],
+    };
+  }
+
+  // Fire all validations concurrently
+  const results = await Promise.all(raw.map((p) => singleValidator(p, root)));
+
+  const resolved: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (!result.valid) {
+      return { valid: false, failedPath: raw[i], suggestions: result.suggestions };
+    }
+    resolved.push(result.resolved);
+  }
+
+  return { valid: true, resolved };
 }
