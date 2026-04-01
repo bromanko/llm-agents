@@ -89,6 +89,7 @@ function setupReviewCommand(overrides: ReviewDependencies = {}) {
       source: "jj",
     }),
     runReviews: async () => ({
+      ok: true,
       findings: [sampleFinding("MEDIUM", "default")],
       totalResponseLength: 42,
     }),
@@ -163,6 +164,7 @@ test("/review gleam --fix high queues only HIGH findings", async () => {
 
   const { review, ctx, followUps } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "high-find"),
         sampleFinding("MEDIUM", "medium-find"),
@@ -192,6 +194,7 @@ test("/review gleam --fix high queues only HIGH findings", async () => {
 test("/review gleam --fix medium queues HIGH and MEDIUM findings", async () => {
   const { review, ctx, followUps } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "high-find"),
         sampleFinding("MEDIUM", "medium-find"),
@@ -212,6 +215,7 @@ test("/review gleam --fix medium queues HIGH and MEDIUM findings", async () => {
 test("/review gleam --fix high notifies error and completes when queueFixFollowUp fails", async () => {
   const { review, ctx, notifications } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "broken-guard"),
       ],
@@ -257,6 +261,7 @@ test("/review gleam --fix high notifies error and completes when queueFixFollowU
 test("/review gleam --fix high notifies error without reason when error is not an Error instance", async () => {
   const { review, ctx, notifications } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "broken-guard"),
       ],
@@ -310,6 +315,7 @@ test("/review gleam --fix high notifies error and completes when sendUserMessage
       source: "jj" as const,
     }),
     runReviews: async () => ({
+      ok: true,
       findings: [sampleFinding("HIGH", "broken-guard")],
       totalResponseLength: 200,
     }),
@@ -500,6 +506,7 @@ test("/review with no args shows usage", async () => {
 test("/review gleam --fix high with only LOW findings skips all and does not queue", async () => {
   const { review, ctx, followUps, notifications } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [sampleFinding("LOW", "minor-thing")],
       totalResponseLength: 100,
     }),
