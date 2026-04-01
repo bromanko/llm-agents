@@ -19,6 +19,7 @@
       "./pi/ci-guard/extensions",
       "./pi/code-review/extensions",
       "./pi/design-studio/extensions",
+      "./pi/files/extensions",
       "./pi/git/extensions",
       "./pi/jj/extensions",
       "./pi/live-edit/extensions",

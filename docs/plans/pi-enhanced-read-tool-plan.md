@@ -130,22 +130,37 @@ just a revert of the root `package.json` change or of the enabling commit.
 - [x] (2026-04-01 00:10Z) Verified pi extension docs and examples: registering a tool with the same name overrides a built-in tool, and omitting custom renderers preserves the built-in renderer.
 - [x] (2026-04-01 00:15Z) Re-read upstream built-in `read` implementation and current path/truncation helpers to pin the current result shape, continuation notices, and image behavior that must be preserved.
 - [x] (2026-04-01 00:20Z) Chosen implementation direction: repo-local package code under `pi/files`, `read` only, with expanded range targeting. Session-local dedup deferred to v2.
-- [ ] Scaffold `pi/files` package and a pass-through `read` override that registers successfully but preserves vanilla behavior.
-- [ ] Implement and test local text-read core: path resolution, request normalization, continuation notices, truncation metadata, and error handling.
-- [ ] Wire image fallback via dynamic built-in `createReadToolDefinition(...)` loading and add integration tests.
-- [ ] Add the new package path to the root `package.json` only after targeted tests and manual smoke validation pass.
-- [ ] Document the feature and capture final validation evidence in this plan.
+- [x] (2026-04-01 01:05Z) Scaffolded `pi/files/package.json`, `pi/files/extensions/read.ts`, and `test/extensions/read.test.ts` with a same-name `read` override, explicit prompt guidance, and dependency-injected fallback hooks.
+- [x] (2026-04-01 01:20Z) Implemented `pi/files/lib/enhanced-read.ts` and `pi/files/lib/enhanced-read.test.ts` covering normalization, path resolution, truncation, continuation notices, and structured text-read errors.
+- [x] (2026-04-01 01:30Z) Wired image fallback through lazy `import("@mariozechner/pi-coding-agent")`, added extension behavior tests, and fixed one validation-precedence bug caught by the new aroundLine/tail tests.
+- [x] (2026-04-01 01:35Z) Ran targeted tests with `node --experimental-strip-types --test pi/files/lib/enhanced-read.test.ts test/extensions/read.test.ts` and got `37` passing tests.
+- [x] (2026-04-01 01:45Z) Ran `npm test`; the new read tests stayed green, but `7` unrelated pre-existing failures remained in `test/extensions/code-review.test.ts`.
+- [x] (2026-04-01 01:50Z) Performed programmatic smoke validation via `createEnhancedReadToolDefinition(...)` for `endLine`, `tail`, and `aroundLine`, then added `./pi/files/extensions` to the root `package.json`.
+- [x] (2026-04-01 01:55Z) Updated `README.md` to document the enhanced read override and corrected stale `shared/...` / `packages/...` paths in the touched tool sections.
+- [x] (2026-04-01 18:30Z) Investigated live image behavior in real pi runs, implemented a small-image retry path that re-invokes built-in image read with `autoResizeImages: false` after the specific Photon resize omission message, and verified the retry in extension tests.
 
 ## Surprises & Discoveries
 
-- Observation: root documentation still contains stale examples pointing at `shared/extensions/...`, while the current repository layout uses `pi/...` package paths.
-  Evidence: current root `README.md` fetch and web-search sections point at `shared/extensions/fetch.ts` and `shared/extensions/web-search/index.ts`, but the actual files live at `pi/web/extensions/fetch.ts` and `pi/web/extensions/web-search/index.ts`.
+- Observation: root documentation still contained stale examples pointing at `shared/extensions/...` and `packages/...`, while the current repository layout uses `pi/...` package paths.
+  Evidence: before editing, `README.md` fetch and web-search sections pointed at `shared/extensions/fetch.ts` and `shared/extensions/web-search/index.ts`, while the actual files live at `pi/web/extensions/fetch.ts` and `pi/web/extensions/web-search/index.ts`.
 
 - Observation: built-in `read` only stores `details.truncation` for text results; there is no richer built-in details payload to preserve.
   Evidence: upstream `packages/coding-agent/src/core/tools/read.ts` defines `ReadToolDetails` as `{ truncation?: TruncationResult }`.
 
 - Observation: built-in `read` already reads the entire text file into memory before slicing, so a repo-local text executor does not worsen asymptotic behavior.
   Evidence: upstream `read.ts` reads the full file buffer and performs `textContent.split("\n")` before applying `offset` and `limit`.
+
+- Observation: the first pass of the normalization validator produced the wrong error for `aroundLine + tail` because the `tail` incompatibility check ran first.
+  Evidence: the initial targeted test run failed with `Error: tail cannot be combined with offset, limit, endLine, or aroundLine` in the `normalizeReadRequest rejects aroundLine with offset, limit, endLine, or tail` case; reordering the checks fixed the mismatch and the next targeted run passed all `37` tests.
+
+- Observation: the full repository suite still has unrelated failures in `test/extensions/code-review.test.ts`, so the suite is not globally green even though the new read work is.
+  Evidence: `npm test` ended with `532` passing and `7` failing tests, all in `/review` scenarios under `test/extensions/code-review.test.ts`.
+
+- Observation: the original live image omission was caused by pi's Photon resize path failing on a valid grayscale+alpha PNG, not by the repo-local override.
+  Evidence: calling built-in `createReadToolDefinition(...)` directly on `/tmp/pi-read-tool-image-kwUY4H.png` returned the same omission text; direct probing showed `resizeImage(...)` returned `null` and `PhotonImage.new_from_byteslice(...)` failed with `unreachable` for that file.
+
+- Observation: retrying the problematic PNG without resize restores the inline image attachment at the tool layer, but the current model/provider path still rejects that specific image payload with `Could not process image`.
+  Evidence: the session file `~/.pi/agent/sessions/--Users-bromanko-Code-llm-agents-ws-read-tool--/manual-read-image-retry.jsonl` shows the tool returned `content: [text, image]`, followed by an assistant turn with `stopReason: "error"` and `errorMessage: "The model returned the following errors: Could not process image"`.
 
 ## Decision Log
 
@@ -173,9 +188,27 @@ just a revert of the root `package.json` change or of the enabling commit.
   Rationale: session data shows only ~1.3 exact-repeat reads per session — real but modest. Meanwhile, line targeting addresses 48% of reads and 230+ bash fallbacks. Dedup introduces a novel caching protocol that models must understand to avoid tool-miss loops (re-requesting content after receiving a stub). Neither a `force` parameter escape hatch nor a metadata-only approach resolves this cleanly: `force` requires fragile two-step recovery behavior from the model, while metadata that always returns full content provides no actual savings. Shipping dedup alongside line targeting risks undermining trust in the whole override if the caching confuses models. Better to ship line targeting, prove it stable, then design dedup with real usage data from the enhanced tool.
   Date: 2026-04-01
 
+- Decision: keep the text executor's error surface as structured text results while leaving validation logic factored into a separately testable `normalizeReadRequest(...)` helper.
+  Rationale: this gives the extension a non-crashing runtime path for real sessions, while preserving exact red/green unit tests for bad parameter combinations and normalization math.
+  Date: 2026-04-01
+
+- Decision: satisfy the smoke-validation milestone programmatically through `createEnhancedReadToolDefinition(...)` instead of driving an interactive pi TUI session from the agent harness.
+  Rationale: the coding-agent environment can deterministically assert the same `endLine`, `tail`, and `aroundLine` behaviors without depending on TUI automation, while still exercising the shipped extension entry point.
+  Date: 2026-04-01
+
+- Decision: add a narrow image fallback retry that disables auto-resize only when the built-in image path returns the specific omission message and the original file is small enough to send inline safely.
+  Rationale: this recovers small images that Photon fails to decode during resize, without changing behavior for larger images that still need resize-based size control.
+  Date: 2026-04-01
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The repository now has a repo-local enhanced `read` override under `pi/files` that preserves the built-in text result shape, adds `endLine`, `tail`, `aroundLine`, and `context`, and delegates image files back to pi's built-in image pipeline through a lazy runtime import. The root `package.json` now auto-loads `./pi/files/extensions`, so the override becomes active whenever this repo is used as a pi package.
+
+The most important risk retired during implementation was whether the override could stay plain-Node-testable while still using live pi internals for image fallback. Dependency injection plus lazy `import("@mariozechner/pi-coding-agent")` solved that cleanly. The most useful implementation-time catch was a validator-precedence bug around `aroundLine + tail`; the new targeted tests found it immediately.
+
+Validation is strong but not perfect. The targeted read suite is green (`39` passing tests after the image-retry additions), and the programmatic smoke run proved the three user-facing line-targeting modes on real repo files. The full repository suite still has `7` unrelated failures in `test/extensions/code-review.test.ts`, so the repo is not globally green yet. That does not appear to be caused by this read work, but it should be normalized separately if a fully green baseline is required.
+
+The image follow-up improved one real failure mode but also revealed a deeper one. The extension now retries small omitted images without resize, which restores inline attachments for the Photon failure case. However, the current model/provider stack still rejects at least one grayscale+alpha PNG payload even when the tool returns it successfully. That remaining incompatibility is downstream of the extension and would require either image re-encoding or provider-specific filtering to eliminate completely.
 
 ## Context and Orientation
 
@@ -723,13 +756,57 @@ safe.
 
 ## Artifacts and Notes
 
-Add the following evidence during implementation:
+Targeted test transcript after the final fix:
 
-- short `node --experimental-strip-types --test ...` pass/fail excerpts for the red and green phases
-- one short live pi transcript showing `endLine`, `tail`, and `aroundLine` behavior
-- the final root `package.json` diff line adding `./pi/files/extensions`
+    $ node --experimental-strip-types --test pi/files/lib/enhanced-read.test.ts test/extensions/read.test.ts
+    ...
+    ℹ tests 39
+    ℹ pass 39
+    ℹ fail 0
 
-Expected package manifest diff excerpt:
+Live retry evidence from `manual-read-image-retry.jsonl`:
+
+    {"role":"toolResult","toolName":"read","content":[
+      {"type":"text","text":"Read image file [image/png]"},
+      {"type":"image","mimeType":"image/png", ...}
+    ]}
+    {"role":"assistant","stopReason":"error","errorMessage":"The model returned the following errors: Could not process image"}
+
+Full-suite transcript showing unrelated pre-existing failures:
+
+    $ npm test
+    ...
+    ℹ tests 539
+    ℹ pass 532
+    ℹ fail 7
+    ✖ failing tests:
+    test at test/extensions/code-review.test.ts:114:1
+    test at test/extensions/code-review.test.ts:161:1
+    ...
+
+Programmatic smoke transcript using `createEnhancedReadToolDefinition(...)`:
+
+    SMOKE:endLine
+    {
+      "name": "@bromanko/llm-agents",
+      "version": "1.0.0",
+      "type": "module",
+      "description": "Pi extensions, skills, and tools",
+      ...
+
+    SMOKE:tail
+        "themes": [
+          "./pi/themes"
+        ]
+      }
+    }
+
+    SMOKE:around
+    No external testing dependencies are required. Tests use Node.js built-ins (`node:test`, `node:assert/strict`) and TypeScript support from `--experimental-strip-types`.
+
+    ## Pi enhanced read tool
+
+Final root `package.json` excerpt:
 
     "pi": {
       "extensions": [
