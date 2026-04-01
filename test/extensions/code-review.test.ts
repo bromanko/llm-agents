@@ -7,6 +7,8 @@ import {
   extractResponseText,
   matchesFixThreshold,
   registerReviewCommand,
+  resolveReviewModelObject,
+  resolveReviewRequestAuth,
   type ReviewContext,
   type ReviewDependencies,
 } from "../../pi/code-review/extensions/index.ts";
@@ -89,6 +91,7 @@ function setupReviewCommand(overrides: ReviewDependencies = {}) {
       source: "jj",
     }),
     runReviews: async () => ({
+      ok: true,
       findings: [sampleFinding("MEDIUM", "default")],
       totalResponseLength: 42,
     }),
@@ -163,6 +166,7 @@ test("/review gleam --fix high queues only HIGH findings", async () => {
 
   const { review, ctx, followUps } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "high-find"),
         sampleFinding("MEDIUM", "medium-find"),
@@ -192,6 +196,7 @@ test("/review gleam --fix high queues only HIGH findings", async () => {
 test("/review gleam --fix medium queues HIGH and MEDIUM findings", async () => {
   const { review, ctx, followUps } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "high-find"),
         sampleFinding("MEDIUM", "medium-find"),
@@ -212,6 +217,7 @@ test("/review gleam --fix medium queues HIGH and MEDIUM findings", async () => {
 test("/review gleam --fix high notifies error and completes when queueFixFollowUp fails", async () => {
   const { review, ctx, notifications } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "broken-guard"),
       ],
@@ -257,6 +263,7 @@ test("/review gleam --fix high notifies error and completes when queueFixFollowU
 test("/review gleam --fix high notifies error without reason when error is not an Error instance", async () => {
   const { review, ctx, notifications } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [
         sampleFinding("HIGH", "broken-guard"),
       ],
@@ -310,6 +317,7 @@ test("/review gleam --fix high notifies error and completes when sendUserMessage
       source: "jj" as const,
     }),
     runReviews: async () => ({
+      ok: true,
       findings: [sampleFinding("HIGH", "broken-guard")],
       totalResponseLength: 200,
     }),
@@ -472,6 +480,55 @@ test("extractResponseText handles content with no text blocks", () => {
   assert.equal(result, "");
 });
 
+test("resolveReviewModelObject prefers registry model for object session models", () => {
+  const registryModel = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+  };
+
+  const ctx: ReviewContext = {
+    ...createTestCtx().ctx,
+    model: {
+      provider: "openai-codex",
+      id: "gpt-5.4",
+      name: "session-model",
+    },
+    modelRegistry: {
+      find: () => registryModel,
+    },
+  };
+
+  assert.equal(resolveReviewModelObject(ctx), registryModel);
+});
+
+test("resolveReviewRequestAuth uses getApiKeyAndHeaders when available", async () => {
+  const model = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+  };
+
+  const auth = await resolveReviewRequestAuth(
+    {
+      ...createTestCtx().ctx,
+      model,
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => ({
+          ok: true as const,
+          apiKey: "token-123",
+          headers: { Authorization: "Bearer token-123" },
+        }),
+      },
+    },
+    model,
+  );
+
+  assert.deepEqual(auth, {
+    apiKey: "token-123",
+    headers: { Authorization: "Bearer token-123" },
+  });
+});
+
 // --- Finding 18: no-UI early return path ---
 
 test("/review exits early when hasUI is false", async () => {
@@ -500,6 +557,7 @@ test("/review with no args shows usage", async () => {
 test("/review gleam --fix high with only LOW findings skips all and does not queue", async () => {
   const { review, ctx, followUps, notifications } = setupReviewCommand({
     runReviews: async () => ({
+      ok: true,
       findings: [sampleFinding("LOW", "minor-thing")],
       totalResponseLength: 100,
     }),
