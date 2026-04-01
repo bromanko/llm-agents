@@ -3,14 +3,16 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { buildSkipGlobArgs, DEFAULT_GREP_LIMIT } from "../lib/constants.ts";
 import { getCwd } from "../lib/execution-context.ts";
 import { paginate, normalizeOffset } from "../lib/pagination.ts";
-import { validatePath } from "../lib/path-suggest.ts";
+import { validatePath, validatePaths } from "../lib/path-suggest.ts";
 import { executeRg } from "../lib/rg.ts";
 import { formatResultEnvelope } from "../lib/result-envelope.ts";
 import type {
   GrepToolParams,
+  MultiPathValidationResult,
   PathValidationResult,
   RgExecutor,
   SearchToolDetails,
+  SinglePathValidator,
 } from "../lib/types.ts";
 
 const parameters = {
@@ -22,7 +24,13 @@ const parameters = {
       items: { type: "string" },
       description: "Literal OR search terms. Exactly one of pattern or anyOf must be provided.",
     },
-    path: { type: "string", description: "Path to search within, relative to the working directory." },
+    path: {
+      oneOf: [
+        { type: "string", description: "Path to search within, relative to the working directory." },
+        { type: "array", items: { type: "string" }, maxItems: 20, description: "Multiple paths to search within." },
+      ],
+      description: "Path(s) to search within, relative to the working directory.",
+    },
     glob: { type: "string", description: "Optional ripgrep glob filter." },
     type: { type: "string", description: "Optional ripgrep file type alias, e.g. ts, py, json." },
     ignoreCase: { type: "boolean", description: "Ignore case when searching." },
@@ -42,12 +50,12 @@ const parameters = {
   additionalProperties: false,
 } as const;
 
-function buildPathError(requestedPath: string, validation: Extract<PathValidationResult, { valid: false }>): string {
-  if (validation.suggestions.length === 0) {
+export function buildPathError(requestedPath: string, suggestions: string[]): string {
+  if (suggestions.length === 0) {
     return `Error: Path not found: ${requestedPath}`;
   }
 
-  return `Error: Path not found: ${requestedPath}. Did you mean: ${validation.suggestions.join(", ")}`;
+  return `Error: Path not found: ${requestedPath}. Did you mean: ${suggestions.join(", ")}`;
 }
 
 function shouldUseLiteral(params: GrepToolParams): boolean {
@@ -80,7 +88,7 @@ function normalizeContext(context: number | undefined): number | undefined {
   return Math.max(0, Math.floor(context));
 }
 
-function buildGrepArgs(params: GrepToolParams, scope: string): string[] {
+function buildGrepArgs(params: GrepToolParams, scopes: string[]): string[] {
   const args = ["--color", "never"];
   const outputMode = params.outputMode ?? "content";
   const context = normalizeContext(params.context);
@@ -114,7 +122,7 @@ function buildGrepArgs(params: GrepToolParams, scope: string): string[] {
     args.push("-e", params.pattern);
   }
 
-  args.push(scope);
+  args.push(...scopes);
   return args;
 }
 
@@ -170,14 +178,22 @@ function createDetails(mode: string, scope: string, items: string[], totalCount:
   };
 }
 
+export type MultiPathValidator = (
+  pathInput: string | string[] | undefined,
+  root: string,
+  singleValidator?: SinglePathValidator,
+) => Promise<MultiPathValidationResult>;
+
 export interface GrepToolDeps {
   rgExecutor?: RgExecutor;
-  pathValidator?: (requestedPath: string | undefined, root: string) => Promise<PathValidationResult>;
+  pathValidator?: SinglePathValidator;
+  multiPathValidator?: MultiPathValidator;
 }
 
 export function createGrepToolDefinition(deps: GrepToolDeps = {}) {
   const rgExecutor = deps.rgExecutor ?? executeRg;
-  const pathValidator = deps.pathValidator ?? validatePath;
+  const singlePathValidator = deps.pathValidator ?? validatePath;
+  const multiPathValidator = deps.multiPathValidator ?? validatePaths;
 
   return {
     name: "grep",
@@ -201,17 +217,18 @@ export function createGrepToolDefinition(deps: GrepToolDeps = {}) {
       }
 
       const cwd = getCwd(ctx);
-      const validation = await pathValidator(params.path, cwd);
+      const validation = await multiPathValidator(params.path, cwd, singlePathValidator);
       if (!validation.valid) {
-        const requestedPath = params.path ?? ".";
+        const requestedPath = validation.failedPath;
         return {
-          content: [{ type: "text" as const, text: buildPathError(requestedPath, validation) }],
+          content: [{ type: "text" as const, text: buildPathError(requestedPath, validation.suggestions) }],
           details: { isError: true, error: `Path not found: ${requestedPath}`, suggestions: validation.suggestions },
         };
       }
 
-      const scope = validation.resolved;
-      const args = buildGrepArgs(params, scope);
+      const scopes = validation.resolved;
+      const scope = scopes.join(", ");
+      const args = buildGrepArgs(params, scopes);
       const rgResult = await rgExecutor(args, cwd);
 
       if (rgResult.error) {
