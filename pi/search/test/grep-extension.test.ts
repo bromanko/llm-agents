@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import registerGrepExtension, { createGrepToolDefinition, type GrepToolDeps } from "../extensions/grep.ts";
+import registerGrepExtension, { buildPathError, createGrepToolDefinition, type GrepToolDeps, type MultiPathValidator } from "../extensions/grep.ts";
 import { DEFAULT_GREP_LIMIT } from "../lib/constants.ts";
-import type { GrepToolParams, RgExecutor, RgResult } from "../lib/types.ts";
+import type { GrepToolParams, MultiPathValidationResult, PathValidationResult, RgExecutor, RgResult, SinglePathValidator } from "../lib/types.ts";
 
 type GrepTool = ReturnType<typeof createGrepToolDefinition>;
 type GrepResult = Awaited<ReturnType<GrepTool["execute"]>>;
@@ -273,7 +273,7 @@ test("count mode offset past end reports an empty page summary", async () => {
 
 test("invalid path returns suggestion when available", async () => {
   const tool = createGrepToolDefinition({
-    pathValidator: async () => ({ valid: false, suggestions: ["src/lib"] }),
+    multiPathValidator: async () => ({ valid: false, failedPath: "lib", suggestions: ["src/lib"] }),
   });
 
   const result = await executeGrep(tool, { pattern: "foo", path: "lib" });
@@ -287,7 +287,7 @@ test("invalid path returns suggestion when available", async () => {
 
 test("invalid path without suggestions returns a plain structured error", async () => {
   const tool = createGrepToolDefinition({
-    pathValidator: async () => ({ valid: false, suggestions: [] }),
+    multiPathValidator: async () => ({ valid: false, failedPath: "missing", suggestions: [] }),
   });
 
   const result = await executeGrep(tool, { pattern: "foo", path: "missing" });
@@ -351,7 +351,7 @@ test("rg exit code 1 returns empty results not an error", async () => {
 
 test("rg execution errors surface structured error details", async () => {
   const tool = createGrepToolDefinition({
-    pathValidator: async () => ({ valid: true, resolved: "src", kind: "directory" }),
+    multiPathValidator: async () => ({ valid: true, resolved: ["src"] }),
     rgExecutor: async () => ({ lines: [], matched: false, error: "regex parse error" }),
   });
 
@@ -377,4 +377,117 @@ test("rg not found returns installation guidance", async () => {
   const text = getText(result);
   assert.match(text, /ripgrep/);
   assert.match(text, /Install it/);
+});
+
+// --- Multi-path tests ---
+
+test("schema path field accepts a string or array via oneOf", () => {
+  const tool = createGrepToolDefinition();
+  const pathProp = tool.parameters.properties.path;
+  assert.ok(pathProp);
+  assert.ok("oneOf" in pathProp, "path property should have oneOf for string|array");
+});
+
+test("multi-path passes all resolved paths to rg", async () => {
+  const capture = createCapturingExecutor();
+  const tool = createGrepToolDefinition({
+    rgExecutor: capture.executor,
+    multiPathValidator: async () => ({ valid: true, resolved: ["src", "lib", "tests"] }),
+  });
+
+  await executeGrep(tool, { pattern: "foo", path: ["src", "lib", "tests"] });
+
+  const args = capture.getArgs();
+  // The last 3 args should be the paths
+  assert.deepEqual(args.slice(-3), ["src", "lib", "tests"]);
+});
+
+test("multi-path scope shows comma-separated paths", async () => {
+  const tool = createGrepToolDefinition({
+    rgExecutor: async () => ({ lines: ["src/a.ts:1:foo", "lib/b.ts:2:foo"], matched: true, error: null }),
+    multiPathValidator: async () => ({ valid: true, resolved: ["src", "lib"] }),
+  });
+
+  const result = await executeGrep(tool, { pattern: "foo", path: ["src", "lib"] });
+  const text = getText(result);
+  assert.match(text, /Scope: src, lib/);
+});
+
+test("multi-path with one invalid path returns error for that path", async () => {
+  const tool = createGrepToolDefinition({
+    multiPathValidator: async () => ({ valid: false, failedPath: "nonexistent", suggestions: ["nexistent"] }),
+  });
+
+  const result = await executeGrep(tool, { pattern: "foo", path: ["src", "nonexistent"] });
+  assert.match(getText(result), /Path not found: nonexistent/);
+  assert.match(getText(result), /nexistent/);
+});
+
+test("single string path still works (backward compat)", async () => {
+  const capture = createCapturingExecutor();
+  const tool = createGrepToolDefinition({
+    rgExecutor: capture.executor,
+    multiPathValidator: async () => ({ valid: true, resolved: ["src"] }),
+  });
+
+  await executeGrep(tool, { pattern: "foo", path: "src" });
+
+  const args = capture.getArgs();
+  assert.equal(args[args.length - 1], "src");
+});
+
+test("multi-path details include comma-separated scope", async () => {
+  const tool = createGrepToolDefinition({
+    rgExecutor: async () => ({ lines: ["a.ts:1:foo"], matched: true, error: null }),
+    multiPathValidator: async () => ({ valid: true, resolved: ["dir1", "dir2"] }),
+  });
+
+  const result = await executeGrep(tool, { pattern: "foo", path: ["dir1", "dir2"] });
+  assert.equal(result.details?.scope, "dir1, dir2");
+});
+
+// Finding 7: integration test — real validatePaths wired with mock pathValidator
+test("multiPathValidator receives singlePathValidator from deps", async () => {
+  const singleCalls: string[] = [];
+  const tool = createGrepToolDefinition({
+    pathValidator: async (p, _root) => {
+      singleCalls.push(p ?? ".");
+      return { valid: true, resolved: p ?? ".", kind: "directory" as const };
+    },
+    rgExecutor: async () => ({ lines: [], matched: false, error: null }),
+  });
+
+  await executeGrep(tool, { pattern: "foo", path: ["a", "b"] });
+  assert.deepEqual(singleCalls, ["a", "b"]);
+});
+
+// Finding 12: direct unit tests for buildPathError
+test("buildPathError with no suggestions", () => {
+  assert.equal(buildPathError("foo/bar", []), "Error: Path not found: foo/bar");
+});
+
+test("buildPathError with suggestions", () => {
+  assert.equal(
+    buildPathError("foo/bar", ["foo/baz", "foo/bat"]),
+    "Error: Path not found: foo/bar. Did you mean: foo/baz, foo/bat",
+  );
+});
+
+// Finding 13: verify singlePathValidator is forwarded as third arg to multiPathValidator
+test("multiPathValidator receives the configured singlePathValidator", async () => {
+  let receivedValidator: unknown;
+  const mySingle: SinglePathValidator = async () => ({ valid: true, resolved: "x", kind: "file" });
+  const myMulti: MultiPathValidator = async (_input, _root, single) => {
+    receivedValidator = single;
+    return { valid: true, resolved: ["."] };
+  };
+
+  const tool = createGrepToolDefinition({
+    pathValidator: mySingle,
+    multiPathValidator: myMulti,
+    rgExecutor: async () => ({ lines: [], matched: false, error: null }),
+  });
+
+  await executeGrep(tool, { pattern: "foo" });
+  assert.equal(receivedValidator, mySingle);
 });
