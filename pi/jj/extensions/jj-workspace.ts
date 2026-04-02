@@ -11,7 +11,7 @@ import {
   listWorkspaceWindows,
   parseTmuxVersion,
   selectWindow,
-} from "../lib/tmux-workspaces.ts";
+} from "../../lib/tmux-workspaces.ts";
 import {
   JJ_WORKSPACE_COMMANDS,
   isValidWorkspaceName,
