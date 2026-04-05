@@ -54,6 +54,7 @@ export interface GrepToolParams {
 export interface FindToolParams {
   pattern: string;
   path?: string;
+  maxDepth?: number;
   limit?: number;
   offset?: number;
   hidden?: boolean;

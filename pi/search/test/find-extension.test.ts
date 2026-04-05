@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import registerFindExtension, { createFindToolDefinition, type FindToolDeps } from "../extensions/find.ts";
+import registerFindExtension, { createFindToolDefinition, depthWithinScope, normalizeMaxDepth, type FindToolDeps } from "../extensions/find.ts";
 import { DEFAULT_FIND_LIMIT } from "../lib/constants.ts";
 import type { FindToolParams, RgExecutor, RgResult } from "../lib/types.ts";
 
@@ -78,6 +78,7 @@ test("schema exposes P0 extension fields and prompt guidance", () => {
   const properties = tool.parameters.properties;
 
   assert.ok(properties.offset);
+  assert.ok(properties.maxDepth);
   assert.ok(properties.hidden);
   assert.ok(properties.respectIgnore);
   assert.equal(tool.promptSnippet, "Find files by path or filename pattern with pagination.");
@@ -192,6 +193,25 @@ test("file scope returns matching file directly without invoking rg", async () =
   });
 });
 
+test("maxDepth does not filter out a matching file scope", async () => {
+  const tool = createFindToolDefinition({
+    rgExecutor: async () => ({ lines: [], matched: true, error: null }),
+    pathValidator: async () => ({ valid: true, resolved: "src/config.ts", kind: "file" }),
+  });
+
+  const result = await executeFind(tool, { pattern: "config", maxDepth: 0 });
+  assert.deepEqual(result.details, {
+    mode: "find files",
+    scope: "src/config.ts",
+    items: ["src/config.ts"],
+    totalCount: 1,
+    returnedCount: 1,
+    truncated: false,
+    nextOffset: undefined,
+    offset: 0,
+  });
+});
+
 test("pagination text includes next offset", async () => {
   const lines = Array.from({ length: 30 }, (_, index) => `file-${index + 1}.ts`);
   const tool = createFindToolDefinition({
@@ -220,23 +240,162 @@ test("hidden true includes hidden files", async () => {
   assert.ok(capture.getArgs().includes("--hidden"));
 });
 
-test("normalizes fractional limit and negative offset in details", async () => {
-  const lines = Array.from({ length: 10 }, (_, index) => `file-${index + 1}.ts`);
+test("maxDepth is forwarded to rg as --max-depth with +1 offset", async () => {
+  const capture = createCapturingExecutor();
+  const tool = createFindToolDefinition({ rgExecutor: capture.executor });
+
+  await executeFind(tool, { pattern: "*.ts", maxDepth: 0 });
+  const args = capture.getArgs();
+  const depthIndex = args.indexOf("--max-depth");
+  assert.ok(depthIndex !== -1, "--max-depth flag should be present");
+  assert.equal(args[depthIndex + 1], "1");
+});
+
+test("maxDepth omitted does not add --max-depth to rg args", async () => {
+  const capture = createCapturingExecutor();
+  const tool = createFindToolDefinition({ rgExecutor: capture.executor });
+
+  await executeFind(tool, { pattern: "*.ts" });
+  assert.ok(!capture.getArgs().includes("--max-depth"));
+});
+
+test("normalizes fractional limit, maxDepth, and negative offset in details", async () => {
+  const lines = [
+    "root.ts",
+    "src/one.ts",
+    "src/nested/two.ts",
+    "src/nested/deeper/three.ts",
+  ];
   const tool = createFindToolDefinition({
     rgExecutor: async () => ({ lines, matched: true, error: null }),
   });
 
-  const result = await executeFind(tool, { pattern: "*.ts", limit: 5.9, offset: -3.2 });
+  const result = await executeFind(tool, { pattern: "*.ts", limit: 5.9, maxDepth: 1.9, offset: -3.2 });
   assert.deepEqual(result.details, {
     mode: "find files",
     scope: ".",
-    items: lines.slice(0, 5),
-    totalCount: 10,
-    returnedCount: 5,
-    truncated: true,
-    nextOffset: 5,
+    items: ["root.ts", "src/one.ts"],
+    totalCount: 2,
+    returnedCount: 2,
+    truncated: false,
+    nextOffset: undefined,
     offset: 0,
   });
+});
+
+test("maxDepth filters directory results before pagination", async () => {
+  const lines = [
+    "root.ts",
+    "src/one.ts",
+    "src/nested/two.ts",
+    "src/nested/deeper/three.ts",
+  ];
+  const tool = createFindToolDefinition({
+    rgExecutor: async () => ({ lines, matched: true, error: null }),
+  });
+
+  const result = await executeFind(tool, { pattern: "*.ts", maxDepth: 1 });
+  assert.deepEqual(result.details, {
+    mode: "find files",
+    scope: ".",
+    items: ["root.ts", "src/one.ts"],
+    totalCount: 2,
+    returnedCount: 2,
+    truncated: false,
+    nextOffset: undefined,
+    offset: 0,
+  });
+});
+
+test("maxDepth 0 at root scope returns only direct children", async () => {
+  const lines = [
+    "root.ts",
+    "src/one.ts",
+    "src/nested/two.ts",
+  ];
+  const tool = createFindToolDefinition({
+    rgExecutor: async () => ({ lines, matched: true, error: null }),
+  });
+
+  const result = await executeFind(tool, { pattern: "*.ts", maxDepth: 0 });
+  assert.deepEqual(result.details, {
+    mode: "find files",
+    scope: ".",
+    items: ["root.ts"],
+    totalCount: 1,
+    returnedCount: 1,
+    truncated: false,
+    nextOffset: undefined,
+    offset: 0,
+  });
+});
+
+test("maxDepth filtering applies before pagination offsets", async () => {
+  const lines = Array.from({ length: 20 }, (_, i) => `file-${i}.ts`)
+    .concat(Array.from({ length: 5 }, (_, i) => `deep/nested/file-${i}.ts`));
+  const tool = createFindToolDefinition({
+    rgExecutor: async () => ({ lines, matched: true, error: null }),
+  });
+
+  const result = await executeFind(tool, { pattern: "*.ts", maxDepth: 0, limit: 10, offset: 5 });
+  // Only the 20 root-level files survive; paginate from offset 5
+  assert.equal(result.details.totalCount, 20);
+  assert.equal(result.details.offset, 5);
+  assert.equal(result.details.returnedCount, 10);
+  assert.equal(result.details.nextOffset, 15);
+});
+
+test("maxDepth is measured relative to a nested directory scope", async () => {
+  const tool = createFindToolDefinition({
+    pathValidator: async () => ({ valid: true, resolved: "src/nested", kind: "directory" }),
+    rgExecutor: async () => ({
+      lines: ["src/nested/two.ts", "src/nested/deeper/three.ts"],
+      matched: true,
+      error: null,
+    }),
+  });
+
+  const result = await executeFind(tool, { pattern: "*.ts", path: "nested", maxDepth: 0 });
+  assert.deepEqual(result.details, {
+    mode: "find files",
+    scope: "src/nested",
+    items: ["src/nested/two.ts"],
+    totalCount: 1,
+    returnedCount: 1,
+    truncated: false,
+    nextOffset: undefined,
+    offset: 0,
+  });
+});
+
+test("negative maxDepth is clamped to 0", async () => {
+  const lines = [
+    "root.ts",
+    "src/one.ts",
+    "src/nested/two.ts",
+  ];
+  const tool = createFindToolDefinition({
+    rgExecutor: async () => ({ lines, matched: true, error: null }),
+  });
+
+  const result = await executeFind(tool, { pattern: "*.ts", maxDepth: -1 });
+  assert.deepEqual(result.details.items, ["root.ts"]);
+  assert.equal(result.details.totalCount, 1);
+});
+
+test("maxDepth NaN is treated as undefined and returns all results", async () => {
+  const lines = [
+    "root.ts",
+    "src/one.ts",
+    "src/nested/two.ts",
+  ];
+  const tool = createFindToolDefinition({
+    rgExecutor: async () => ({ lines, matched: true, error: null }),
+  });
+
+  const result = await executeFind(tool, { pattern: "*.ts", maxDepth: NaN });
+  assert.deepEqual(result.details.items, ["root.ts", "src/one.ts", "src/nested/two.ts"]);
+  assert.equal(result.details.totalCount, 3);
 });
 
 test("omitting limit uses the default find page size", async () => {
@@ -305,4 +464,70 @@ test("rg exit code 1 returns empty results", async () => {
   const text = getText(result);
   assert.match(text, /0 results/);
   assert.doesNotMatch(text, /Error:/);
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests for normalizeMaxDepth
+// ---------------------------------------------------------------------------
+
+test("normalizeMaxDepth returns undefined for undefined", () => {
+  assert.equal(normalizeMaxDepth(undefined), undefined);
+});
+
+test("normalizeMaxDepth returns undefined for NaN", () => {
+  assert.equal(normalizeMaxDepth(NaN), undefined);
+});
+
+test("normalizeMaxDepth returns undefined for Infinity", () => {
+  assert.equal(normalizeMaxDepth(Infinity), undefined);
+  assert.equal(normalizeMaxDepth(-Infinity), undefined);
+});
+
+test("normalizeMaxDepth clamps negative values to 0", () => {
+  assert.equal(normalizeMaxDepth(-1), 0);
+  assert.equal(normalizeMaxDepth(-100), 0);
+});
+
+test("normalizeMaxDepth floors fractional values", () => {
+  assert.equal(normalizeMaxDepth(1.9), 1);
+  assert.equal(normalizeMaxDepth(0.5), 0);
+});
+
+test("normalizeMaxDepth passes through valid integers", () => {
+  assert.equal(normalizeMaxDepth(0), 0);
+  assert.equal(normalizeMaxDepth(3), 3);
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests for depthWithinScope
+// ---------------------------------------------------------------------------
+
+test("depthWithinScope: root-level file in root scope has depth 0", () => {
+  assert.equal(depthWithinScope("file.ts", "."), 0);
+});
+
+test("depthWithinScope: nested files in root scope count separators", () => {
+  assert.equal(depthWithinScope("src/one.ts", "."), 1);
+  assert.equal(depthWithinScope("a/b/c.ts", "."), 2);
+});
+
+test("depthWithinScope: item exactly matching scope returns 0", () => {
+  assert.equal(depthWithinScope("src/nested", "src/nested"), 0);
+});
+
+test("depthWithinScope: direct child of nested scope has depth 0", () => {
+  assert.equal(depthWithinScope("src/nested/file.ts", "src/nested"), 0);
+});
+
+test("depthWithinScope: deeper child of nested scope counts relative depth", () => {
+  assert.equal(depthWithinScope("src/nested/deeper/file.ts", "src/nested"), 1);
+});
+
+test("depthWithinScope: normalizes backslashes", () => {
+  assert.equal(depthWithinScope("src\\nested\\file.ts", "src/nested"), 0);
+  assert.equal(depthWithinScope("src\\nested\\deeper\\file.ts", "src/nested"), 1);
+});
+
+test("depthWithinScope: normalizes double slashes", () => {
+  assert.equal(depthWithinScope("src//nested//file.ts", "src/nested"), 0);
 });

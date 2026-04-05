@@ -5,7 +5,7 @@ import path from "node:path";
 import { DEFAULT_SKIP_NAMES } from "./constants.ts";
 import type { MultiPathValidationResult, PathKind, PathValidationResult, SinglePathValidator } from "./types.ts";
 
-function normalizeSeparators(value: string): string {
+export function normalizeSeparators(value: string): string {
   return value.replace(/[\\/]+/g, "/");
 }
 
