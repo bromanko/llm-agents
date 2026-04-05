@@ -2,7 +2,7 @@
   "name": "@bromanko/pi-search",
   "version": "1.0.0",
   "type": "module",
-  "description": "Repo-local find and grep overrides with pagination and literal-first search",
+  "description": "Workspace-aware find and grep overrides with pagination and literal-first search",
   "keywords": [
     "pi-package"
   ],

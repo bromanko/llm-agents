@@ -11,7 +11,7 @@ import {
   listWorkspaceWindows,
   parseTmuxVersion,
   selectWindow,
-} from "../lib/tmux-workspaces.ts";
+} from "../../lib/tmux-workspaces.ts";
 import {
   JJ_WORKSPACE_COMMANDS,
   isValidWorkspaceName,
@@ -232,6 +232,21 @@ export default async function(pi: ExtensionAPI) {
     }
 
     return changes;
+  }
+
+  async function getConflictedFiles(): Promise<string[]> {
+    const result = await runJj(["resolve", "--list", "-r", "@"]);
+    if (result.code !== 0) return [];
+
+    return result.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^(\S+)/);
+        return match ? match[1]! : "";
+      })
+      .filter(Boolean);
   }
 
   async function getPreMergeOpId(): Promise<string> {
@@ -721,13 +736,72 @@ export default async function(pi: ExtensionAPI) {
         }
 
         if (hasConflict) {
-          await runJj(["op", "restore", preMergeOpId], { timeout: LONG_JJ_TIMEOUT });
+          const conflictedFiles = await getConflictedFiles();
+          const fileList = conflictedFiles.length > 0
+            ? conflictedFiles.join(", ")
+            : "unknown files";
+
+          const resolveWithModel = await ctx.ui.confirm(
+            "Merge conflict detected",
+            [
+              `Merge produced conflicts in: ${fileList}`,
+              "",
+              "Would you like the session model to attempt resolving the conflicts?",
+              "If not, the repository will be restored to its pre-finish state.",
+            ].join("\n"),
+          );
+
+          if (!resolveWithModel) {
+            await runJj(["op", "restore", preMergeOpId], { timeout: LONG_JJ_TIMEOUT });
+            ctx.ui.notify(
+              `Merge conflict detected while finishing ${name}. Repository restored to pre-finish state. Resolve in workspace and retry.`,
+              "error",
+            );
+            return;
+          }
+
+          // Keep the merge commit and ask the model to resolve conflicts
+          pi.sendUserMessage([
+            `The merge while finishing workspace '${name}' produced conflicts in: ${fileList}.`,
+            "",
+            "Please resolve these merge conflicts:",
+            "1. Read each conflicted file to see the jj conflict markers",
+            "2. Edit each file to resolve the conflicts — remove the conflict markers and keep the correct content",
+            `3. After resolving all conflicts, tell me to run \`/ws-finish ${name}\` to complete the merge`,
+            "",
+            "jj conflict markers look like:",
+            "```",
+            "<<<<<<< conflict N of M",
+            "%%%%%%% diff from: <base commit>",
+            '\\\\\\\\\\\\\\        to: <side A commit>',
+            "-old line",
+            "+new line from A",
+            "+++++++ <side B commit>",
+            "content from side B",
+            ">>>>>>> conflict N of M ends",
+            "```",
+          ].join("\n"));
+
           ctx.ui.notify(
-            `Merge conflict detected while finishing ${name}. Repository restored to pre-finish state. Resolve in workspace and retry.`,
-            "error",
+            `Merge conflict in: ${fileList}. Asking model to resolve. Run /ws-finish ${name} again after resolution.`,
+            "warning",
           );
           return;
         }
+      }
+
+      // Safety check: ensure default@ is not conflicted before forgetting.
+      // This catches the case where a previous model-assisted conflict resolution
+      // was incomplete and the user re-ran /ws-finish prematurely.
+      const defaultConflictCheck = await runJj([
+        "log", "-r", "default@", "--no-graph", "-T", "conflict",
+      ]);
+      if (defaultConflictCheck.code === 0 && defaultConflictCheck.stdout.trim() === "true") {
+        ctx.ui.notify(
+          `Cannot finish workspace '${name}': the default workspace has unresolved merge conflicts. Resolve conflicts and retry.`,
+          "error",
+        );
+        return;
       }
 
       const forgetResult = await runJj(["workspace", "forget", name], { timeout: LONG_JJ_TIMEOUT });

@@ -1,15 +1,26 @@
 import { readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { DEFAULT_SKIP_NAMES } from "./constants.ts";
-import type { PathKind, PathValidationResult } from "./types.ts";
+import type { MultiPathValidationResult, PathKind, PathValidationResult, SinglePathValidator } from "./types.ts";
 
 function normalizeSeparators(value: string): string {
   return value.replace(/[\\/]+/g, "/");
 }
 
+function expandHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) return homedir() + value.slice(1);
+  return value;
+}
+
 function normalizeRequestedPath(requestedPath: string): string {
-  return requestedPath.replace(/[\\/]+/g, path.sep);
+  return expandHome(requestedPath).replace(/[\\/]+/g, path.sep);
+}
+
+function usesHomePrefix(requestedPath: string): boolean {
+  return requestedPath === "~" || requestedPath.startsWith("~/") || requestedPath.startsWith("~\\");
 }
 
 function normalizeRelative(root: string, absolutePath: string): string {
@@ -99,10 +110,8 @@ function scoreCandidate(candidate: string, requested: string): number {
   return Number.POSITIVE_INFINITY;
 }
 
-async function suggestPaths(requestedPath: string, root: string): Promise<string[]> {
+function rankSuggestions(candidates: string[], requestedPath: string): string[] {
   const normalizedRequestedPath = normalizeSeparators(requestedPath);
-  const candidates: string[] = [];
-  await walkPaths(root, root, candidates);
 
   return candidates
     .map((candidate) => ({ candidate, score: scoreCandidate(candidate, normalizedRequestedPath) }))
@@ -116,6 +125,41 @@ async function suggestPaths(requestedPath: string, root: string): Promise<string
     .map((entry) => entry.candidate);
 }
 
+async function suggestPaths(requestedPath: string, root: string): Promise<string[]> {
+  const candidates: string[] = [];
+  await walkPaths(root, root, candidates);
+  return rankSuggestions(candidates, requestedPath);
+}
+
+function formatExternalSuggestion(requestedPath: string, root: string, absolutePath: string): string {
+  if (usesHomePrefix(requestedPath)) {
+    const relativeToHome = path.relative(homedir(), absolutePath);
+    return relativeToHome ? `~/${normalizeSeparators(relativeToHome)}` : "~";
+  }
+
+  const normalizedRequestedPath = normalizeRequestedPath(requestedPath);
+  if (path.isAbsolute(normalizedRequestedPath)) {
+    return normalizeSeparators(absolutePath);
+  }
+
+  return normalizeRelative(root, absolutePath);
+}
+
+async function suggestExternalPaths(requestedPath: string, absolutePath: string, root: string): Promise<string[]> {
+  const parentDirectory = path.dirname(absolutePath);
+
+  try {
+    const entries = await readdir(parentDirectory, { withFileTypes: true });
+    const candidates = entries
+      .filter((entry) => !DEFAULT_SKIP_NAMES.includes(entry.name as (typeof DEFAULT_SKIP_NAMES)[number]))
+      .map((entry) => formatExternalSuggestion(requestedPath, root, path.join(parentDirectory, entry.name)));
+
+    return rankSuggestions(candidates, requestedPath);
+  } catch {
+    return [];
+  }
+}
+
 function determinePathKind(stats: Awaited<ReturnType<typeof stat>>): PathKind {
   return stats.isDirectory() ? "directory" : "file";
 }
@@ -127,21 +171,76 @@ export async function validatePath(requestedPath: string | undefined, root: stri
 
   const normalizedRequestedPath = normalizeRequestedPath(requestedPath);
   const absolutePath = path.resolve(root, normalizedRequestedPath);
-  if (!isWithinRoot(absolutePath, root)) {
-    return { valid: false, suggestions: [] };
-  }
+  const withinRoot = isWithinRoot(absolutePath, root);
 
   try {
     const stats = await stat(absolutePath);
+    // For paths within root, return a relative resolved path.
+    // For paths outside root (e.g. absolute paths to other directories),
+    // return the absolute path so rg can find them.
+    const resolved = withinRoot
+      ? normalizeRelative(root, absolutePath)
+      : normalizeSeparators(absolutePath);
     return {
       valid: true,
-      resolved: normalizeRelative(root, absolutePath),
+      resolved,
       kind: determinePathKind(stats),
     };
   } catch {
+    const suggestions = withinRoot
+      ? await suggestPaths(normalizedRequestedPath, root)
+      : await suggestExternalPaths(requestedPath, absolutePath, root);
     return {
       valid: false,
-      suggestions: await suggestPaths(normalizedRequestedPath, root),
+      suggestions,
     };
   }
+}
+
+const MAX_SEARCH_PATHS = 20;
+
+/**
+ * Normalize a path input (string, string[], or undefined) into an array of
+ * raw path strings.  Returns `["."]` for absent/empty input.
+ */
+function normalizePaths(input: string | string[] | undefined): string[] {
+  if (input == null || input === "") return ["."];
+  if (typeof input === "string") return [input];
+  const filtered = input.filter((p) => p !== "");
+  if (filtered.length === 0) return ["."];
+  return filtered;
+}
+
+/**
+ * Validate one or more search paths.  Every path must pass `validatePath`;
+ * the first failure (in input order) is reported.
+ */
+export async function validatePaths(
+  pathInput: string | string[] | undefined,
+  root: string,
+  singleValidator: SinglePathValidator = validatePath,
+): Promise<MultiPathValidationResult> {
+  const raw = normalizePaths(pathInput);
+
+  if (raw.length > MAX_SEARCH_PATHS) {
+    return {
+      valid: false,
+      failedPath: `<${raw.length} paths>`,
+      suggestions: [],
+    };
+  }
+
+  // Fire all validations concurrently
+  const results = await Promise.all(raw.map((p) => singleValidator(p, root)));
+
+  const resolved: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (!result.valid) {
+      return { valid: false, failedPath: raw[i], suggestions: result.suggestions };
+    }
+    resolved.push(result.resolved);
+  }
+
+  return { valid: true, resolved };
 }

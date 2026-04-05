@@ -597,7 +597,8 @@ test("/ws-finish: kills window, snapshots workspace state, and completes merge",
           if (args[1] === "log" && String(args[3]).includes("ancestors(auth@) & mutable()")) {
             return ok("abc123|finish auth|false|false\n");
           }
-          if (args[1] === "log" && args[3] === "default@") return ok("true\n");
+          if (args[1] === "log" && args[3] === "default@" && String(args[6]).includes("empty")) return ok("true\n");
+          if (args[1] === "log" && args[3] === "default@" && String(args[6]).includes("conflict")) return ok("false\n");
           if (args[1] === "op" && args[2] === "log") return ok("op123\n");
           if (args[1] === "log" && String(args[3]).includes("heads(ancestors(auth@)")) return ok("abc123\n");
           if (args[1] === "new") return ok();
@@ -659,7 +660,7 @@ test("/ws-finish: snapshot failure aborts before forget/delete", async () => {
   }
 });
 
-test("/ws-finish: merge conflict restores operation after snapshot", async () => {
+test("/ws-finish: merge conflict restores operation when user declines model resolution", async () => {
   const repoDir = createJjRepoTempDir();
   const wsPath = path.resolve(repoDir, "..", `${path.basename(repoDir)}-ws-auth`);
   fs.mkdirSync(wsPath, { recursive: true });
@@ -685,7 +686,106 @@ test("/ws-finish: merge conflict restores operation after snapshot", async () =>
           if (args[1] === "log" && String(args[3]).includes("heads(ancestors(auth@)")) return ok("abc123\n");
           if (args[1] === "new") return ok();
           if (args[1] === "log" && args[3] === "@" && String(args[6]).includes("conflict")) return ok("true|merge123\n");
+          if (args[1] === "resolve" && args[2] === "--list") return ok("file.txt    2-sided conflict\n");
           if (args[1] === "op" && args[2] === "restore") return ok();
+          return ok();
+        }));
+
+      const wsFinish = captured.commands.get("ws-finish")!;
+      const { notifications, ctx } = createCommandCtx({ confirm: false });
+      await wsFinish.handler("auth", ctx);
+
+      assert.ok(execCalls.some((call) => call.command === "jj" && call.args[1] === "op" && call.args[2] === "restore"));
+      assert.ok(notifications.some((n) => /restored to pre-finish state/i.test(n.message)));
+      assert.ok(!execCalls.some((call) => call.command === "jj" && call.args[1] === "workspace" && call.args[2] === "forget"));
+      assert.equal(fs.existsSync(wsPath), true);
+    });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(wsPath, { recursive: true, force: true });
+  }
+});
+
+test("/ws-finish: merge conflict sends user message for model resolution when accepted", async () => {
+  const repoDir = createJjRepoTempDir();
+  const wsPath = path.resolve(repoDir, "..", `${path.basename(repoDir)}-ws-auth`);
+  fs.mkdirSync(wsPath, { recursive: true });
+
+  try {
+    await withCwd(repoDir, async () => {
+      const { captured, execCalls, pi } = await withEnv({ TMUX: "/tmp/test-tmux" }, async () =>
+        setupExtension(async (_command, args, options) => {
+          if (args[0] === "-V") return ok("tmux 3.6a\n");
+          if (args[1] === "workspace" && args[2] === "list") return ok("default:def000\nauth:abc123\n");
+          if (args[1] === "log" && args[2] === "-r" && args[3] === "@" && args[5] === "change_id") return ok("def000\n");
+          if (args[1] === "workspace" && args[2] === "root") return ok(`${wsPath}\n`);
+          if (args[0] === "list-windows") return ok("");
+          if (args[1] === "status") {
+            assert.equal(options?.cwd, wsPath);
+            return ok("The working copy has no changes.\n");
+          }
+          if (args[1] === "log" && String(args[3]).includes("ancestors(auth@) & mutable()")) {
+            return ok("abc123|finish auth|false|false\n");
+          }
+          if (args[1] === "log" && args[3] === "default@") return ok("true\n");
+          if (args[1] === "op" && args[2] === "log") return ok("op123\n");
+          if (args[1] === "log" && String(args[3]).includes("heads(ancestors(auth@)")) return ok("abc123\n");
+          if (args[1] === "new") return ok();
+          if (args[1] === "log" && args[3] === "@" && String(args[6]).includes("conflict")) return ok("true|merge123\n");
+          if (args[1] === "resolve" && args[2] === "--list") return ok("file.txt    2-sided conflict\n");
+          if (args[1] === "op" && args[2] === "restore") return ok();
+          return ok();
+        }));
+
+      const sentMessages: string[] = [];
+      pi.sendUserMessage = (content: unknown) => {
+        sentMessages.push(typeof content === "string" ? content : JSON.stringify(content));
+      };
+
+      const wsFinish = captured.commands.get("ws-finish")!;
+      const { notifications, ctx } = createCommandCtx({ confirm: true });
+      await wsFinish.handler("auth", ctx);
+
+      // Should NOT have restored operation
+      assert.ok(!execCalls.some((call) => call.command === "jj" && call.args[1] === "op" && call.args[2] === "restore"));
+      // Should NOT have forgotten workspace
+      assert.ok(!execCalls.some((call) => call.command === "jj" && call.args[1] === "workspace" && call.args[2] === "forget"));
+      // Should have sent a user message about conflict resolution
+      assert.equal(sentMessages.length, 1);
+      assert.match(sentMessages[0]!, /file\.txt/);
+      assert.match(sentMessages[0]!, /resolve these merge conflicts/);
+      // Should have warning notification
+      assert.ok(notifications.some((n) => n.level === "warning" && /merge conflict/i.test(n.message)));
+      // Workspace directory should still exist
+      assert.equal(fs.existsSync(wsPath), true);
+    });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(wsPath, { recursive: true, force: true });
+  }
+});
+
+test("/ws-finish: aborts when default@ has unresolved conflicts before forget", async () => {
+  const repoDir = createJjRepoTempDir();
+  const wsPath = path.resolve(repoDir, "..", `${path.basename(repoDir)}-ws-auth`);
+  fs.mkdirSync(wsPath, { recursive: true });
+
+  try {
+    await withCwd(repoDir, async () => {
+      const { captured, execCalls } = await withEnv({ TMUX: "/tmp/test-tmux" }, async () =>
+        setupExtension(async (_command, args, _options) => {
+          if (args[0] === "-V") return ok("tmux 3.6a\n");
+          if (args[1] === "workspace" && args[2] === "list") return ok("default:def000\nauth:abc123\n");
+          if (args[1] === "log" && args[2] === "-r" && args[3] === "@" && args[5] === "change_id") return ok("def000\n");
+          if (args[1] === "workspace" && args[2] === "root") return ok(`${wsPath}\n`);
+          if (args[0] === "list-windows") return ok("");
+          if (args[1] === "status") return ok("The working copy has no changes.\n");
+          // No unique workspace changes (already merged from a previous attempt)
+          if (args[1] === "log" && String(args[3]).includes("ancestors(auth@) & mutable()")) {
+            return ok("");
+          }
+          // default@ IS conflicted (from a previous incomplete model resolution)
+          if (args[1] === "log" && args[3] === "default@" && String(args[6]).includes("conflict")) return ok("true\n");
           return ok();
         }));
 
@@ -693,9 +793,11 @@ test("/ws-finish: merge conflict restores operation after snapshot", async () =>
       const { notifications, ctx } = createCommandCtx();
       await wsFinish.handler("auth", ctx);
 
-      assert.ok(execCalls.some((call) => call.command === "jj" && call.args[1] === "op" && call.args[2] === "restore"));
-      assert.ok(notifications.some((n) => /restored to pre-finish state/i.test(n.message)));
+      // Should NOT have forgotten workspace
       assert.ok(!execCalls.some((call) => call.command === "jj" && call.args[1] === "workspace" && call.args[2] === "forget"));
+      // Should show error about unresolved conflicts
+      assert.ok(notifications.some((n) => n.level === "error" && /unresolved merge conflicts/i.test(n.message)));
+      // Workspace directory should still exist
       assert.equal(fs.existsSync(wsPath), true);
     });
   } finally {

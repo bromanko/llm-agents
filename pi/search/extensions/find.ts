@@ -18,7 +18,7 @@ const parameters = {
   type: "object",
   properties: {
     pattern: { type: "string", description: "Filename glob or plain substring to match." },
-    path: { type: "string", description: "Path to search within, relative to the working directory." },
+    path: { type: "string", description: "Path to search within, relative to the working directory, ~-relative, or absolute." },
     limit: { type: "number", description: "Maximum number of file paths to return." },
     offset: { type: "number", description: "Result offset for pagination." },
     hidden: { type: "boolean", description: "Include hidden files." },
