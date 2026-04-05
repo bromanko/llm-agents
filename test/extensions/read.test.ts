@@ -68,8 +68,8 @@ test("exposes the enhanced read schema and prompt guidance", () => {
   assert.ok(properties.context);
   assert.equal(tool.promptSnippet, "Read file contents with line targeting (offset/limit, endLine, tail, aroundLine)");
   assert.deepEqual(tool.promptGuidelines, [
-    "Use read to examine files instead of cat or sed.",
-    "Prefer endLine, tail, and aroundLine over bash head/tail/sed when you need line-targeted reads.",
+    "Use read instead of bash cat, head, tail, or sed for file content inspection whenever the structured tool can answer the question.",
+    "Prefer endLine, tail, and aroundLine over bash head, tail, or sed when you need line-targeted reads.",
   ]);
 });
 

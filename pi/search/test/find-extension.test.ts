@@ -73,13 +73,19 @@ test("schema exposes built-in-compatible fields", () => {
   assert.ok(properties.limit);
 });
 
-test("schema exposes P0 extension fields", () => {
+test("schema exposes P0 extension fields and prompt guidance", () => {
   const tool = createFindToolDefinition();
   const properties = tool.parameters.properties;
 
   assert.ok(properties.offset);
   assert.ok(properties.hidden);
   assert.ok(properties.respectIgnore);
+  assert.equal(tool.promptSnippet, "Find files by path or filename pattern with pagination.");
+  assert.deepEqual(tool.promptGuidelines, [
+    "Use find instead of bash find or ls for file discovery whenever the structured tool can answer the question.",
+    "Use maxDepth for shallow listings instead of bash find -maxdepth or ls -R when the structured tool can answer the question.",
+    "Prefer limit and offset over piping bash output to head, tail, or sed for pagination.",
+  ]);
 });
 
 test("invalid path returns structured error details with suggestions", async () => {

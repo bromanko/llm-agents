@@ -91,6 +91,12 @@ export function createFindToolDefinition(deps: FindToolDeps = {}) {
     name: "find",
     label: "Find",
     description: "Find files with pagination, ignore controls, and path recovery.",
+    promptSnippet: "Find files by path or filename pattern with pagination.",
+    promptGuidelines: [
+      "Use find instead of bash find or ls for file discovery whenever the structured tool can answer the question.",
+      "Use maxDepth for shallow listings instead of bash find -maxdepth or ls -R when the structured tool can answer the question.",
+      "Prefer limit and offset over piping bash output to head, tail, or sed for pagination.",
+    ],
     parameters,
 
     async execute(

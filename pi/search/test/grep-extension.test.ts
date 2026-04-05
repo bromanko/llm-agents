@@ -81,7 +81,7 @@ test("schema exposes all built-in-compatible fields", () => {
   assert.ok(properties.limit);
 });
 
-test("schema exposes P0 extension fields", () => {
+test("schema exposes P0 extension fields and prompt guidance", () => {
   const tool = createGrepToolDefinition();
   const properties = tool.parameters.properties;
 
@@ -92,6 +92,11 @@ test("schema exposes P0 extension fields", () => {
   assert.ok(properties.hidden);
   assert.ok(properties.respectIgnore);
   assert.ok(properties.regex);
+  assert.equal(tool.promptSnippet, "Search file contents with pagination and path-aware scoping.");
+  assert.deepEqual(tool.promptGuidelines, [
+    "Use grep instead of bash grep or rg for content searches whenever the structured tool can answer the question.",
+    "Prefer outputMode, glob, type, context, limit, and offset over shell pipes when shaping search output.",
+  ]);
 });
 
 test("rejects call with both pattern and anyOf", async () => {

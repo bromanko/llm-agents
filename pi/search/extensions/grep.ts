@@ -199,6 +199,11 @@ export function createGrepToolDefinition(deps: GrepToolDeps = {}) {
     name: "grep",
     label: "Grep",
     description: "Search file contents with literal-first matching, pagination, and path recovery.",
+    promptSnippet: "Search file contents with pagination and path-aware scoping.",
+    promptGuidelines: [
+      "Use grep instead of bash grep or rg for content searches whenever the structured tool can answer the question.",
+      "Prefer outputMode, glob, type, context, limit, and offset over shell pipes when shaping search output.",
+    ],
     parameters,
 
     async execute(
