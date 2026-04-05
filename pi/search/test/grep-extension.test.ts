@@ -496,3 +496,54 @@ test("multiPathValidator receives the configured singlePathValidator", async () 
   await executeGrep(tool, { pattern: "foo" });
   assert.equal(receivedValidator, mySingle);
 });
+
+// --- renderCall tests ---
+
+function renderText(tool: GrepTool, params: GrepToolParams): string {
+  const component = tool.renderCall!(params);
+  return component.render(200).join("\n");
+}
+
+test("renderCall shows pattern with slashes", () => {
+  const tool = createGrepToolDefinition();
+  const text = renderText(tool, { pattern: "foo" });
+  assert.match(text, /grep \/foo\/ in \./);
+});
+
+test("renderCall shows anyOf terms quoted and pipe-separated", () => {
+  const tool = createGrepToolDefinition();
+  const text = renderText(tool, { anyOf: ["alpha", "beta"] });
+  assert.match(text, /grep "alpha" \| "beta" in \./);
+});
+
+test("renderCall shows string path", () => {
+  const tool = createGrepToolDefinition();
+  const text = renderText(tool, { pattern: "foo", path: "src/lib" });
+  assert.match(text, /in src\/lib/);
+});
+
+test("renderCall shows array path as comma-separated list", () => {
+  const tool = createGrepToolDefinition();
+  const text = renderText(tool, { pattern: "foo", path: ["src", "lib"] });
+  assert.match(text, /in src, lib/);
+});
+
+test("renderCall shows limit and outputMode", () => {
+  const tool = createGrepToolDefinition();
+  const text = renderText(tool, { pattern: "foo", limit: 50, outputMode: "files_with_matches" });
+  assert.match(text, /limit 50/);
+  assert.match(text, /\[files_with_matches\]/);
+});
+
+test("renderCall shows glob and type", () => {
+  const tool = createGrepToolDefinition();
+  const text = renderText(tool, { pattern: "foo", glob: "*.ts", type: "py" });
+  assert.match(text, /\(\*\.ts\)/);
+  assert.match(text, /type:py/);
+});
+
+test("renderCall does not show outputMode when content (default)", () => {
+  const tool = createGrepToolDefinition();
+  const text = renderText(tool, { pattern: "foo", outputMode: "content" });
+  assert.doesNotMatch(text, /\[content\]/);
+});

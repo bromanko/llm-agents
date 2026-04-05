@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { buildSkipGlobArgs, DEFAULT_GREP_LIMIT } from "../lib/constants.ts";
@@ -178,6 +179,57 @@ function createDetails(mode: string, scope: string, items: string[], totalCount:
   };
 }
 
+function shortenPath(p: string): string {
+  const home = os.homedir();
+  if (p.startsWith(home)) {
+    return `~${p.slice(home.length)}`;
+  }
+  return p;
+}
+
+interface ToolComponent {
+  render(width: number): string[];
+  invalidate(): void;
+}
+
+function renderAsSimpleComponent(text: string): ToolComponent {
+  return {
+    render(): string[] {
+      return text.split("\n");
+    },
+    invalidate() { },
+  };
+}
+
+function formatGrepCallHeader(args: GrepToolParams): string {
+  // Pattern display: prefer pattern, fall back to anyOf terms
+  let patternDisplay: string;
+  if (typeof args.pattern === "string") {
+    patternDisplay = `/${args.pattern}/`;
+  } else if (Array.isArray(args.anyOf) && args.anyOf.length > 0) {
+    patternDisplay = args.anyOf.map((t) => `"${t}"`).join(" | ");
+  } else {
+    patternDisplay = "//";
+  }
+
+  // Path display: handle string, array, or missing
+  let pathDisplay: string;
+  if (typeof args.path === "string") {
+    pathDisplay = shortenPath(args.path || ".");
+  } else if (Array.isArray(args.path) && args.path.length > 0) {
+    pathDisplay = args.path.map((p) => shortenPath(p)).join(", ");
+  } else {
+    pathDisplay = ".";
+  }
+
+  let header = `grep ${patternDisplay} in ${pathDisplay}`;
+  if (args.glob) header += ` (${args.glob})`;
+  if (args.type) header += ` type:${args.type}`;
+  if (args.limit !== undefined) header += ` limit ${args.limit}`;
+  if (args.outputMode && args.outputMode !== "content") header += ` [${args.outputMode}]`;
+  return header;
+}
+
 export type MultiPathValidator = (
   pathInput: string | string[] | undefined,
   root: string,
@@ -270,6 +322,10 @@ export function createGrepToolDefinition(deps: GrepToolDeps = {}) {
         content: [{ type: "text" as const, text }],
         details: createDetails(mode, scope, page.items, page.totalCount, offset, page.nextOffset, page.truncated, totalMatchCount),
       };
+    },
+
+    renderCall(args: GrepToolParams) {
+      return renderAsSimpleComponent(formatGrepCallHeader(args));
     },
   };
 }
