@@ -166,13 +166,13 @@ level rather than hidden.
 - [x] (2026-04-05 00:15Z) Verified `fd` respects `.gitignore` by default and supports `--exclude` for skip names.
 - [x] (2026-04-05 00:16Z) Verified `fd` treats the first positional argument as a required pattern; scoped traversal needs a match-all pattern such as `.` before the search path.
 - [x] (2026-04-05 00:17Z) Verified direct `fd --glob` / `fd --full-path` matching does not preserve current `rg --files --glob` semantics for slash-containing patterns.
-- [x] (2026-04-05 00:18Z) Verified `npm test` passes with 708 tests in the current tree.
-- [ ] Add `kind` to `FindToolParams`, plus `FdResult` and `FdExecutor` types.
-- [ ] Write failing extension tests for schema exposure, prompt guidance, slash-containing pattern parity, and mixed-mode union behavior.
-- [ ] Create `fd.ts` executor with tests.
-- [ ] Wire `find.ts` to choose `fd` for directory and any modes while post-filtering candidates in TypeScript.
-- [ ] Land schema, prompt guidance, and runtime behavior together in one green commit.
-- [ ] Run focused search tests and the full test suite, then record outcomes.
+- [x] (2026-04-05 00:18Z) Verified `npm test` passes with 708 tests in the pre-change tree.
+- [x] (2026-04-06 00:10Z) Added `kind` to `FindToolParams`, plus `FdResult` and `FdExecutor` types.
+- [x] (2026-04-06 00:18Z) Expanded `pi/search/test/find-extension.test.ts` with schema, prompt-guidance, slash-pattern parity, mixed-mode union, file-scope, and fd-flag-forwarding coverage.
+- [x] (2026-04-06 00:24Z) Created `pi/search/lib/fd.ts` and `pi/search/lib/fd.test.ts` with spawn, exit-code, trailing-slash, and ENOENT coverage.
+- [x] (2026-04-06 00:31Z) Wired `pi/search/extensions/find.ts` to route `kind: "directory"` and `kind: "any"` through `fd` while preserving file-mode behavior through `rg` and shared TypeScript pattern matching.
+- [ ] (2026-04-06 00:34Z) Land schema, prompt guidance, and runtime behavior together in one green commit (completed: code and tests are green in the working tree; remaining: create the commit if desired).
+- [x] (2026-04-06 00:40Z) Ran focused search tests, smoke checks, and the full repository test suite; `npm test` now passes with 728 tests.
 
 
 ## Surprises & Discoveries
@@ -199,6 +199,12 @@ level rather than hidden.
 - Observation: unlike the earlier plan, no npm dependency is needed. `fd` handles
   traversal and ignore-file semantics natively, while path-pattern semantics stay in
   TypeScript.
+
+- Observation: `fd` mixed-mode traversal (`--type f --type d`) does not include the
+  scoped directory itself, so `kind: "any"` only needed shared post-filtering and did
+  not require extra root-suppression logic.
+  Evidence: the smoke check for `path: "pi/search", kind: "directory", maxDepth: 0`
+  returned only `pi/search/extensions`, `pi/search/lib`, and `pi/search/test`.
 
 
 ## Decision Log
@@ -240,10 +246,36 @@ level rather than hidden.
   does not yet implement.
   Date: 2026-04-05
 
+- Decision: reuse one shared `entryMatchesPattern()` helper for direct-file shortcuts,
+  `kind: "directory"`, and `kind: "any"` instead of keeping separate matching logic.
+  Rationale: sharing one matcher is the smallest way to guarantee parity for
+  slash-containing patterns and basename-only matches across all kinds.
+  Date: 2026-04-06
+
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The implementation is complete in the working tree. `pi/search/extensions/find.ts`
+now accepts `kind: "file" | "directory" | "any"`, keeps `"file"` as the default,
+and routes directory-aware modes through the new `pi/search/lib/fd.ts` executor while
+preserving file-mode behavior through `rg`.
+
+The main semantic goal held: slash-containing patterns still match against full
+normalized paths, while slash-free patterns still match against basenames. That
+behavior now applies consistently to direct-file scopes, directory-only listings, and
+mixed path listings because all three paths share the same TypeScript matcher.
+
+Validation passed at both the focused and full-suite levels. The focused search run
+`node --experimental-strip-types --test pi/search/lib/fd.test.ts pi/search/lib/rg.test.ts pi/search/lib/path-suggest.test.ts pi/search/lib/pagination.test.ts pi/search/test/find-extension.test.ts pi/search/test/grep-extension.test.ts`
+passed with 145 tests. The full repository run `npm test` passed with 728 tests. The
+smoke checks also matched the expected behavior: `kind: "directory"` with
+`path: "pi/search", maxDepth: 0` returned only `pi/search/extensions`,
+`pi/search/lib`, and `pi/search/test`, and the mixed-mode slash-containing smoke check
+returned only matching `pi/search/lib/*.ts` entries.
+
+The remaining non-code step is optional version-control hygiene: no commit was created
+in this session, so the plan's commit checkpoint remains open even though the code and
+validation work are finished.
 
 
 ## Context and Orientation
@@ -261,11 +293,15 @@ are:
   `SearchToolDetails` defines the structured details object returned alongside text.
 
 - `pi/search/lib/rg.ts` — The ripgrep executor. Spawns `rg` as a child process,
-  collects stdout/stderr, and returns a structured `RgResult`. The new `fd` executor
-  will follow this same pattern.
+  collects stdout/stderr, and returns a structured `RgResult`. File-only `find`
+  requests still use this backend.
 
-- `pi/search/lib/rg.test.ts` — Tests for the ripgrep executor using mock spawn
-  processes. The new `fd` executor tests will follow this same pattern.
+- `pi/search/lib/fd.ts` — The directory-aware executor. Spawns `fd`, strips trailing
+  slashes from directory output, handles ENOENT, and returns structured path lists for
+  `kind: "directory"` and `kind: "any"`.
+
+- `pi/search/lib/rg.test.ts` and `pi/search/lib/fd.test.ts` — Mock-spawn tests for the
+  `rg` and `fd` executors.
 
 - `pi/search/lib/constants.ts` — Shared constants including `DEFAULT_SKIP_NAMES` (an
   array of directory names like `.git`, `node_modules`, `dist` that should be excluded
@@ -283,8 +319,9 @@ are:
   determines whether it is a file or directory. Used by `find.ts` before any search.
 
 - `pi/search/test/find-extension.test.ts` — Extension-level tests for the find tool.
-  Tests schema, prompt guidance, path errors, direct-file scopes, `maxDepth`, pagination,
-  hidden/ignore flags, and rg argument forwarding.
+  Tests schema, prompt guidance, path errors, direct-file scopes, `kind` behavior,
+  slash-containing pattern parity, `maxDepth`, pagination, hidden/ignore flags, rg
+  argument forwarding, and fd argument forwarding.
 
 - `pi/search/lib/execution-context.ts` — Provides `getCwd(ctx)` to extract the working
   directory from the tool execution context.
@@ -308,25 +345,25 @@ Individual test files can be run with:
 
 ## Preconditions and Verified Facts
 
-The following facts were verified in the current tree on 2026-04-05:
+The following facts were verified in the current tree on 2026-04-06:
 
 - `fd` 10.4.2 is installed at `/nix/store/.../fd-10.4.2/bin/fd` and available on PATH.
 - `rg` 15.1.0 is installed and available on PATH.
-- `npm test` from the repository root runs 708 tests, all passing.
+- `npm test` from the repository root now runs 728 tests, all passing.
 - `pi/search/lib/types.ts` defines `FindToolParams` with fields: `pattern`, `path?`,
-  `maxDepth?`, `limit?`, `offset?`, `hidden?`, `respectIgnore?`. No `kind` field yet.
-- `pi/search/lib/types.ts` defines `RgResult` as
-  `{ lines: string[]; matched: boolean; error: string | null }` and `RgExecutor` as
-  `(args: string[], cwd?: string) => Promise<RgResult>`.
+  `kind?`, `maxDepth?`, `limit?`, `offset?`, `hidden?`, `respectIgnore?`.
+- `pi/search/lib/types.ts` defines both `RgResult` / `RgExecutor` and
+  `FdResult` / `FdExecutor`.
 - `pi/search/extensions/find.ts` exports `createFindToolDefinition(deps)` where `deps`
-  includes optional `rgExecutor` and `pathValidator` for testing. It exports
-  `normalizeMaxDepth` and `depthWithinScope` as named exports.
-- `pi/search/extensions/find.ts` currently uses `fileTargetMatchesPattern(pattern, filePath)`
-  to preserve file-mode semantics: slash-containing patterns match against the full
-  normalized path, slash-free patterns match against the basename.
-- `pi/search/extensions/find.ts` defines `buildFindArgs` which adds `--max-depth` as
-  `normalizedDepth + 1` (because `rg` counts traversal levels while our `maxDepth`
-  counts file depth within scope where 0 = direct children).
+  includes optional `rgExecutor`, `fdExecutor`, and `pathValidator` for testing. It
+  exports `normalizeMaxDepth` and `depthWithinScope` as named exports.
+- `pi/search/extensions/find.ts` now uses a shared `entryMatchesPattern(pattern, itemPath)`
+  helper so slash-containing patterns match against the full normalized path and
+  slash-free patterns match against the basename across all kinds.
+- `pi/search/extensions/find.ts` defines `buildFindArgs` for `rg` file-mode execution
+  and `buildFdArgs` for `fd` directory/mixed-mode execution. Both use the same `+1`
+  `maxDepth` offset because our `maxDepth` counts depth within scope where 0 = direct
+  children.
 - `pi/search/lib/constants.ts` exports `DEFAULT_SKIP_NAMES` (13 entries including
   `.git`, `.jj`, `node_modules`, `dist`, etc.), `buildSkipGlobArgs()` which formats
   them as `["--glob", "!.git", "--glob", "!node_modules", ...]`, and
@@ -775,7 +812,7 @@ Note: `fd` appends trailing slashes to directory paths. The executor strips them
 
 Current test run:
 
-    npm test → 708 tests, 0 failures
+    npm test → 728 tests, 0 failures
 
 
 ## Interfaces and Dependencies
