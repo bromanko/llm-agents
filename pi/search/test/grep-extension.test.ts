@@ -547,3 +547,22 @@ test("renderCall does not show outputMode when content (default)", () => {
   const text = renderText(tool, { pattern: "foo", outputMode: "content" });
   assert.doesNotMatch(text, /\[content\]/);
 });
+
+test("renderCall truncates header to given width", () => {
+  const tool = createGrepToolDefinition();
+  const longPath = "/nix/store/" + "a".repeat(200) + "/lib/node_modules/@mariozechner/pi-coding-agent";
+  const component = tool.renderCall!({ pattern: "foo", path: longPath });
+  const lines = component.render(80);
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].length <= 80, `Expected line length <= 80, got ${lines[0].length}`);
+  assert.ok(lines[0].endsWith("\u2026"), "Truncated line should end with ellipsis");
+});
+
+test("renderCall does not truncate header that fits within width", () => {
+  const tool = createGrepToolDefinition();
+  const component = tool.renderCall!({ pattern: "foo" });
+  const lines = component.render(200);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0], "grep /foo/ in .");
+  assert.doesNotMatch(lines[0], /\u2026/);
+});

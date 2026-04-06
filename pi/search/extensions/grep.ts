@@ -7,6 +7,7 @@ import { paginate, normalizeOffset } from "../lib/pagination.ts";
 import { validatePath, validatePaths } from "../lib/path-suggest.ts";
 import { executeRg } from "../lib/rg.ts";
 import { formatResultEnvelope } from "../lib/result-envelope.ts";
+import { truncateToWidth } from "../lib/truncate.ts";
 import type {
   GrepToolParams,
   MultiPathValidationResult,
@@ -194,8 +195,8 @@ interface ToolComponent {
 
 function renderAsSimpleComponent(text: string): ToolComponent {
   return {
-    render(): string[] {
-      return text.split("\n");
+    render(width: number): string[] {
+      return text.split("\n").map((line) => truncateToWidth(line, width));
     },
     invalidate() { },
   };
