@@ -68,12 +68,12 @@ A final risk is that `loadEntriesFromFile`, `migrateSessionEntries`, and `getAge
 - [x] (2026-04-03 00:00Z) Wrote the initial ExecPlan.
 - [x] (2026-04-03 12:00Z) Rewrote ExecPlan to use pi's built-in SessionManager APIs instead of reinventing session parsing.
 - [x] (2026-04-03 18:00Z) Revised ExecPlan: replaced `listAll()` + `open()` with one-pass scanner using `loadEntriesFromFile()` + `migrateSessionEntries()` to eliminate double I/O. Clarified system-wide scope. Strengthened extension tests and date-range tests.
-- [ ] Create `pi/session-stats/` package skeleton and register in `package.json`.
-- [ ] Implement and test command argument parsing plus local-time date range resolution.
-- [ ] Implement and test session scanning, entry extraction, and cross-session aggregation.
-- [ ] Implement and test report formatting.
-- [ ] Implement extension command handler with overlay.
-- [ ] Update documentation and run full validation.
+- [x] (2026-04-06 00:00Z) Create `pi/session-stats/` package skeleton and register in `package.json`.
+- [x] (2026-04-06 00:00Z) Implement and test command argument parsing plus local-time date range resolution.
+- [x] (2026-04-06 00:00Z) Implement and test session scanning, entry extraction, and cross-session aggregation.
+- [x] (2026-04-06 00:00Z) Implement and test report formatting.
+- [x] (2026-04-06 00:00Z) Implement extension command handler with overlay.
+- [x] (2026-04-06 00:00Z) Update documentation and run full validation.
 
 
 ## Surprises & Discoveries
@@ -111,6 +111,9 @@ A final risk is that `loadEntriesFromFile`, `migrateSessionEntries`, and `getAge
 - Observation: `SessionManager.open()` and `listAll()` are imported from `@mariozechner/pi-coding-agent`, which is only available at pi runtime, not as an npm dependency. Pure library code that needs to be testable standalone must accept plain data, not pi types directly.
   Evidence: all existing extension tests use `test/helpers.ts` mocks and never import `SessionManager` directly.
 
+- Observation: `loadEntriesFromFile` is NOT re-exported from `@mariozechner/pi-coding-agent`'s main index, despite being exported from the internal `session-manager` module. However, `parseSessionEntries(content: string): FileEntry[]` IS exported and provides the same parsing logic without the file read.
+  Evidence: `dist/index.d.ts` re-exports `parseSessionEntries` and `migrateSessionEntries` but not `loadEntriesFromFile`. The internal implementation of `loadEntriesFromFile` is just `readFileSync` + `parseSessionEntries`.
+
 
 ## Decision Log
 
@@ -146,10 +149,16 @@ A final risk is that `loadEntriesFromFile`, `migrateSessionEntries`, and `getAge
   Rationale: matches the existing repository pattern where library modules under `pi/<feature>/lib/` are independently testable and only the thin extension entrypoint imports pi types.
   Date: 2026-04-03
 
+- Decision: use `fs.readFileSync` + `parseSessionEntries` instead of `loadEntriesFromFile` in the extension loader.
+  Rationale: `loadEntriesFromFile` is not re-exported from `@mariozechner/pi-coding-agent`'s main entrypoint. The extension's dynamic import gets `undefined` for it. `parseSessionEntries` provides identical parsing and IS exported. The scanner's built-in default loader (for tests) is unaffected.
+  Date: 2026-04-06
+
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+All five milestones completed in a single pass. 53 new tests cover command parsing (10), date range resolution (12), entry extraction (5), session scanning (5), aggregation (8), report formatting (10), and extension wiring (3). The full test suite (763 tests) passes with zero regressions.
+
+Key design adaptation: the scanner module (`scan-sessions.ts`) uses dependency injection for the `loadEntriesFromFile`/`migrateSessionEntries` functions rather than direct imports from `@mariozechner/pi-coding-agent`. This keeps the scanner testable without the pi runtime (tests use a built-in JSONL parser as the default loader), while the extension entrypoint passes the real pi functions at runtime. Similarly, the extension entrypoint uses dynamic `await import()` for pi runtime values (`BorderedLoader`, `getAgentDir`, TUI components), keeping only `import type` at the top level so the extension test can import the module without requiring pi packages at module load time.
 
 
 ## Context and Orientation
