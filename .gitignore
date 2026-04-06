@@ -8,3 +8,6 @@ shared/skills/word-explorer/websters-1913.txt
 # Nix / direnv
 .direnv/
 result
+
+# Node
+node_modules/

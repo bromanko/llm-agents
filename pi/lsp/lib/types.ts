@@ -74,6 +74,22 @@ export interface ResolvedLspConfig {
   servers: LspServerDefinition[];
 }
 
+export interface LspRange {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+}
+
+export interface LspDiagnostic {
+  range: LspRange;
+  message: string;
+  severity?: number;
+}
+
+export interface LspTextEdit {
+  range: LspRange;
+  newText: string;
+}
+
 /** Parameters accepted by the unified `lsp` tool. */
 export interface LspToolParams {
   action: LspAction;

@@ -59,27 +59,21 @@ Rollback is straightforward. Each milestone is additive and ends with a green te
 
 - [x] (2026-04-01 18:00Z) Verified current `pi/lsp` architecture, existing tests, and the three agreed priorities from the user.
 - [x] (2026-04-01 18:10Z) Authored this ExecPlan as a scoped follow-up to the broader LSP parity work, limited to P0 root-aware keying, P1 `vscode-jsonrpc`, and P2 document synchronization before queries.
-- [ ] Add dependency and refactor `pi/lsp/lib/lsp-client.ts` to use `vscode-jsonrpc` with inbound request support.
-- [ ] Change `pi/lsp/lib/server-manager.ts` to run one server per `(serverName, rootDir)` and expose root-aware lookup helpers.
-- [ ] Centralize document open/change/save state in the server manager and update the interceptor and `lsp` tool to use it.
-- [ ] Run targeted tests, then run `npm test` from the repository root, and update this plan with outcomes.
+- [x] (2026-04-06 20:55Z) Added `vscode-jsonrpc` at the repository root, rewrote `pi/lsp/lib/lsp-client.ts` around `MessageConnection`, and replaced frame-parser tests with behavior tests including inbound `workspace/configuration` handling and destroy-time cleanup.
+- [x] (2026-04-06 21:10Z) Refactored `pi/lsp/lib/server-manager.ts` to run one server per `(serverName, rootDir)`, extended `ManagedServer` with `key`, `rootDir`, and document state, and updated formatting lookups to use file-aware runtime identity.
+- [x] (2026-04-06 21:25Z) Centralized document synchronization in the server manager, updated `pi/lsp/lib/interceptor.ts` and `pi/lsp/lib/lsp-tool.ts` to use shared sync helpers, and keyed diagnostics listener registration by runtime server key.
+- [x] (2026-04-06 21:35Z) Ran `node --experimental-strip-types --test pi/lsp/test/lsp-client.test.ts`, `node --experimental-strip-types --test pi/lsp/test/server-manager.test.ts`, `node --experimental-strip-types --test pi/lsp/test/lsp-tool.test.ts pi/lsp/test/interceptor.test.ts pi/lsp/test/extension.test.ts`, and `npm test`; all passed.
 
 ## Surprises & Discoveries
 
-- Observation: the current server manager stores running servers in `running: Map<string, ManagedServer>` and uses the bare server name as the key.
-  Evidence: `pi/lsp/lib/server-manager.ts` returns an existing running server from `running.get(serverName)` before considering root directory.
+- Observation: Node ESM resolution in this repository required importing the transport library as `vscode-jsonrpc/node.js`, not `vscode-jsonrpc/node`.
+  Evidence: the first targeted `pi/lsp/test/lsp-client.test.ts` run failed with `ERR_MODULE_NOT_FOUND` and the hint `Did you mean to import "vscode-jsonrpc/node.js"?`.
 
-- Observation: the current extension formatting path still looks up servers by bare server name.
-  Evidence: `pi/lsp/extensions/lsp.ts` defines `formatFile(filePath, serverName, content)` and calls `serverManager.getRunningServer(serverName)`.
+- Observation: diagnostics listener deduplication also needed to become root-aware, not just server process lookup.
+  Evidence: `pi/lsp/extensions/lsp.ts` originally keyed listener registration by `server.name`; after multi-root keying, the extension now keys listeners and diagnostics caches by `server.key` so separate roots using the same server name both receive diagnostics.
 
-- Observation: document version tracking currently lives in the interceptor rather than the server manager.
-  Evidence: `pi/lsp/lib/interceptor.ts` maintains `documentVersions` and sends `textDocument/didOpen` and `textDocument/didChange` itself.
-
-- Observation: on-demand LSP tool requests do not currently guarantee that the document is open on the language server.
-  Evidence: `pi/lsp/lib/lsp-tool.ts` sends `textDocument/definition`, `textDocument/hover`, and related requests directly after `ensureServerForFile(filePath)` without a `didOpen` or sync step.
-
-- Observation: the repository currently has no `vscode-jsonrpc` dependency anywhere in the tree.
-  Evidence: repository search for the literal string `"vscode-jsonrpc"` returned zero matches.
+- Observation: document synchronization became simpler once write/edit interception and on-demand queries both treated the server manager as the only owner of document text and versions.
+  Evidence: `pi/lsp/lib/interceptor.ts` no longer stores `documentVersions`, and `pi/lsp/lib/lsp-tool.ts` now calls `syncDocumentFromDisk(filePath)` before serving `diagnostics`, `definition`, `hover`, `references`, `implementation`, `symbols`, `rename`, `code_actions`, `incoming_calls`, and `outgoing_calls`.
 
 ## Decision Log
 
@@ -99,23 +93,39 @@ Rollback is straightforward. Each milestone is additive and ends with a green te
   Rationale: the goal is to improve correctness and reliability without expanding the user-visible API in this pass.
   Date: 2026-04-01
 
+- Decision: key diagnostics listener registration and diagnostics caches by `ManagedServer.key` rather than bare server name.
+  Rationale: once one server name can correspond to multiple root-scoped processes, listener deduplication by name would silently drop diagnostics from later roots.
+  Date: 2026-04-06
+
+- Decision: answer `workspace/configuration` directly from the server manager using the configured per-server settings object.
+  Rationale: this keeps protocol completeness close to server lifecycle ownership and avoids scattering transport-specific request handling into the extension entrypoint.
+  Date: 2026-04-06
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Completed on 2026-04-06. The `pi/lsp` package now has the three hardening changes this plan set out to deliver.
+
+First, transport correctness improved. `pi/lsp/lib/lsp-client.ts` now uses `vscode-jsonrpc` over stdio, preserves the existing request and notification surface, adds `onRequest`, and rejects outstanding work when the client is destroyed. The new `pi/lsp/test/lsp-client.test.ts` covers request/response, diagnostics notifications, generic notifications, server-sent requests, timeouts, aborts, and teardown rather than low-level frame parsing.
+
+Second, multi-root correctness improved. `pi/lsp/lib/server-manager.ts` now computes a composite runtime key from server name plus resolved root directory, returns root-aware managed servers, and exposes `getRunningServerForFile(filePath)` and `getRunningServerByKey(key)`. Formatting in `pi/lsp/extensions/lsp.ts` now uses file-aware lookup, and the tests prove that two sibling roots using the same language server name get distinct managed instances.
+
+Third, document synchronization is now centralized. The server manager owns per-document version and text state, provides `syncDocumentFromDisk`, `syncDocumentContent`, and `saveDocument`, and answers `workspace/configuration` requests. `pi/lsp/lib/interceptor.ts` and `pi/lsp/lib/lsp-tool.ts` now both use those helpers, which means on-demand LSP queries synchronize untouched files before issuing requests and write/edit interception no longer maintains its own version map.
+
+Validation was fully successful. All targeted LSP tests passed, and the full repository suite passed under `npm test` with zero failures. No deferred scope items were pulled into this implementation.
 
 ## Context and Orientation
 
-The `pi/lsp` package is a self-contained pi extension package. `pi/lsp/extensions/lsp.ts` is the entrypoint that loads configuration, creates the server manager, attaches the write/edit interceptor, and registers the unified `lsp` tool.
+The `pi/lsp` package is a self-contained pi extension package. `pi/lsp/extensions/lsp.ts` is the entrypoint that loads configuration, creates the server manager, attaches the write/edit interceptor, maintains a diagnostics cache for the session, and registers the unified `lsp` tool.
 
-`pi/lsp/lib/lsp-client.ts` currently contains a custom stdio JSON-RPC implementation. It exposes `createLspClient(stdin, stdout)` and a small `LspClient` interface used by the rest of the package. Its responsibilities today are message framing, request/response correlation, notification listeners, diagnostics callbacks, and destroy-time cleanup.
+`pi/lsp/lib/lsp-client.ts` now uses `vscode-jsonrpc` over stdio. It exposes `createLspClient(stdin, stdout)` and an `LspClient` interface that supports outbound requests, outbound notifications, diagnostics callbacks, generic notifications, inbound request handling, and destroy-time cleanup.
 
-`pi/lsp/lib/server-manager.ts` detects available servers from config, chooses a server definition by file extension, computes root directories from marker files such as `package.json`, starts language servers lazily, and tracks which servers are running. This is the correct layer for server identity, root routing, and session-level document state.
+`pi/lsp/lib/server-manager.ts` detects available servers from config, chooses a server definition by file extension, computes root directories from marker files such as `package.json`, starts language servers lazily, keys them by `(serverName, rootDir)`, and owns per-document synchronization state. This is now the single source of truth for server identity, root routing, and session-level document state.
 
-`pi/lsp/lib/interceptor.ts` hooks `write` and `edit` tool results. It reads the changed file from disk, sends `didOpen` or `didChange`, optionally requests formatting, waits briefly for diagnostics, and appends a diagnostics block to the tool result. The current document version map lives here.
+`pi/lsp/lib/interceptor.ts` hooks `write` and `edit` tool results. It reads the changed file from disk, delegates synchronization to the server manager through injected helpers, optionally requests formatting, calls `didSave` through the manager, waits briefly for diagnostics, and appends a diagnostics block to the tool result.
 
-`pi/lsp/lib/lsp-tool.ts` defines the single `lsp` tool. It handles actions such as `definition`, `hover`, `references`, and `diagnostics`. It currently ensures that a server is running, but it does not synchronize the file before querying.
+`pi/lsp/lib/lsp-tool.ts` defines the single `lsp` tool. It handles actions such as `definition`, `hover`, `references`, and `diagnostics`. Before any file-scoped request other than `languages`, it now synchronizes the current file through the server manager so the language server sees current text.
 
-Existing tests already cover these areas. `pi/lsp/test/lsp-client.test.ts` tests the custom transport. `pi/lsp/test/server-manager.test.ts` covers root marker detection, routing, detection, and idle shutdown. `pi/lsp/test/interceptor.test.ts` covers write/edit interception and formatting. `pi/lsp/test/lsp-tool.test.ts` covers tool actions and parameter handling. `pi/lsp/test/extension.test.ts` covers extension registration and session lifecycle.
+Existing tests cover these areas. `pi/lsp/test/lsp-client.test.ts` now tests behavior-level transport guarantees. `pi/lsp/test/server-manager.test.ts` covers root marker detection, routing, detection, multi-root isolation, synchronization state, and idle shutdown. `pi/lsp/test/interceptor.test.ts` covers manager-backed synchronization and formatting flow. `pi/lsp/test/lsp-tool.test.ts` covers tool actions and synchronization ordering. `pi/lsp/test/extension.test.ts` covers extension registration and session lifecycle.
 
 ## Preconditions and Verified Facts
 
@@ -125,17 +135,17 @@ The repository root `package.json` contains the authoritative test script:
 
     "test": "node --experimental-strip-types --test '**/*.test.ts' '**/*.test.js'"
 
-The `pi/lsp` package manifest at `pi/lsp/package.json` has no dependencies section. The repository root `package.json` also currently has no dependencies section. Because tests run from the repository root and there is no workspace manager configured, the `vscode-jsonrpc` dependency must be installed at the repository root so `pi/lsp` code imported during tests can resolve it.
+The `pi/lsp` package manifest at `pi/lsp/package.json` still has no local dependencies section. The repository root `package.json` now contains `"vscode-jsonrpc": "^8.2.1"`, and `package-lock.json` was generated at the repository root so Node-based root test execution can resolve the transport dependency.
 
-`pi/lsp/lib/lsp-client.ts` currently exports `createFrameParser`, `createLspClient`, `toLspPosition`, and `fileUri`. Tests in `pi/lsp/test/lsp-client.test.ts` currently exercise low-level frame parsing details that will no longer be the core behavior once `vscode-jsonrpc` is adopted.
+`pi/lsp/lib/lsp-client.ts` now exports `createLspClient`, `toLspPosition`, and `fileUri`, and the `LspClient` interface includes `onRequest` in addition to request, notify, diagnostics, generic notifications, and destroy behavior.
 
-`pi/lsp/lib/server-manager.ts` currently exports `findNearestRootMarker`, `resolveServerBinary`, `createServerManager`, `ManagedServer`, and `ServerManager`. The `ServerManager` interface exposes `getRunningServer(name: string)` but not a file-aware lookup helper.
+`pi/lsp/lib/server-manager.ts` now exports `findNearestRootMarker`, `resolveServerBinary`, `createServerManager`, `ManagedServer`, and `ServerManager`. The `ServerManager` interface now exposes `getRunningServerForFile(filePath)`, `getRunningServerByKey(key)`, `syncDocumentFromDisk(filePath)`, `syncDocumentContent(filePath, content)`, and `saveDocument(filePath)`.
 
-`pi/lsp/extensions/lsp.ts` uses `getRunningServer(serverName)` during formatting, wires diagnostics listeners lazily when a server is ensured, and passes `ensureServerForFile` into both the interceptor and the `lsp` tool.
+`pi/lsp/extensions/lsp.ts` now uses `getRunningServerForFile(filePath)` during formatting, wires diagnostics listeners lazily per runtime server key, and passes manager-backed sync helpers into both the interceptor and the `lsp` tool.
 
-`pi/lsp/lib/interceptor.ts` only intercepts `write` and `edit`, and it currently owns both the recursion guard and document version tracking.
+`pi/lsp/lib/interceptor.ts` only intercepts `write` and `edit`, still owns the recursion guard, and now delegates document lifecycle operations entirely to injected manager-backed helpers.
 
-`pi/lsp/lib/lsp-tool.ts` resolves file paths with `path.resolve`, converts line and column to LSP positions, and directly sends document requests after `ensureServerForFile` succeeds.
+`pi/lsp/lib/lsp-tool.ts` still resolves file paths with `path.resolve` and converts line and column to LSP positions, but it now synchronizes file content from disk before serving file-scoped requests.
 
 ## Scope Boundaries
 
@@ -341,9 +351,31 @@ After all milestones land, there should be no leftover duplicate version bookkee
 
 ## Artifacts and Notes
 
-The most important evidence to keep in this file as implementation proceeds is short test output proving the new behaviors. For example, after Milestone 2, add a short excerpt from the new multi-root test showing both root directories. After Milestone 3, add a short excerpt from the tool test proving the synchronization helper was called before `textDocument/definition`.
+Key validation artifacts from implementation:
 
-Keep any added examples concise. The point is to show what success looked like, not to preserve full test logs.
+    $ node --experimental-strip-types --test pi/lsp/test/lsp-client.test.ts
+    ✔ request/response correlation by id
+    ✔ server-sent requests are handled through onRequest
+    ✔ destroy rejects pending requests and remains safe after listeners are registered
+    ℹ pass 11
+
+    $ node --experimental-strip-types --test pi/lsp/test/server-manager.test.ts
+    ✔ ensureServerForFile creates distinct servers for different roots
+    ✔ getRunningServerForFile returns the correct root-scoped server
+    ✔ syncDocumentContent opens once and changes on subsequent updates
+    ℹ pass 14
+
+    $ node --experimental-strip-types --test pi/lsp/test/lsp-tool.test.ts pi/lsp/test/interceptor.test.ts pi/lsp/test/extension.test.ts
+    ✔ definition synchronizes before issuing the LSP request
+    ✔ diagnostics action synchronizes the document before rendering cached diagnostics
+    ✔ delegates document synchronization to the injected sync helper
+    ℹ pass 34
+
+    $ npm test
+    ℹ pass 869
+    ℹ fail 0
+
+These excerpts are enough to prove the three claims in the plan without preserving full raw logs.
 
 ## Interfaces and Dependencies
 

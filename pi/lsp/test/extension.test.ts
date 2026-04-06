@@ -2,22 +2,78 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createMockExtensionAPI } from "../../../test/helpers.ts";
-import registerLspExtension from "../extensions/lsp.ts";
+import registerLspExtension, { createDiagnosticsRegistry } from "../extensions/lsp.ts";
+import type { LspClient } from "../lib/lsp-client.ts";
+import type { ManagedServer } from "../lib/server-manager.ts";
+import type { LspDiagnostic } from "../lib/types.ts";
 
-/** The canonical static prompt hint. */
 const PROMPT_HINT =
   'Write/edit results include automatic LSP diagnostics and formatting. Use the lsp tool for code intelligence (action "languages" to list supported languages).';
 
-/**
- * Helper: register the extension and return the mock API for inspection.
- * We override registerTool to capture the definition.
- */
+interface RegisteredTool {
+  name: string;
+}
+
+interface BeforeAgentStartResult {
+  systemPrompt?: string;
+}
+
+class FakeLspClient implements LspClient {
+  private diagnosticsListeners: Array<(uri: string, diagnostics: LspDiagnostic[]) => void> = [];
+
+  request<T = unknown>(): Promise<T> {
+    return Promise.resolve(undefined as T);
+  }
+
+  notify(): void {
+    // No-op for these tests.
+  }
+
+  onDiagnostics(cb: (uri: string, diagnostics: LspDiagnostic[]) => void): void {
+    this.diagnosticsListeners.push(cb);
+  }
+
+  onNotification(): void {
+    // No-op for these tests.
+  }
+
+  onRequest(): void {
+    // No-op for these tests.
+  }
+
+  destroy(): void {
+    // No-op for these tests.
+  }
+
+  emitDiagnostics(uri: string, diagnostics: LspDiagnostic[]): void {
+    for (const listener of this.diagnosticsListeners) {
+      listener(uri, diagnostics);
+    }
+  }
+
+  getDiagnosticsListenerCount(): number {
+    return this.diagnosticsListeners.length;
+  }
+}
+
+function createManagedServer(key: string, client: LspClient | null, name = "marksman"): ManagedServer {
+  return {
+    name,
+    key,
+    rootDir: key.split(":").slice(1).join(":"),
+    rootUri: `file://${key.split(":").slice(1).join(":")}`,
+    client,
+    lastActivity: Date.now(),
+    documents: new Map(),
+  };
+}
+
 function setupExtension() {
   const pi = createMockExtensionAPI();
-  let registeredTool: any = null;
+  let registeredTool: RegisteredTool | null = null;
 
-  pi.registerTool = (def: any) => {
-    registeredTool = def;
+  pi.registerTool = (def: unknown) => {
+    registeredTool = def as RegisteredTool;
   };
 
   registerLspExtension(
@@ -48,21 +104,19 @@ test("extension registers session_start, session_shutdown, and before_agent_star
 test("prompt hint text equals canonical static string (exact match)", async () => {
   const { pi } = setupExtension();
 
-  // Simulate session_start to trigger server detection
   const sessionStartHandlers = pi.getHandlers("session_start");
   for (const handler of sessionStartHandlers) {
     await handler({}, { cwd: process.cwd() });
   }
 
-  // Simulate before_agent_start to capture the prompt hint
   const beforeHandlers = pi.getHandlers("before_agent_start");
   let injectedHint = "";
   for (const handler of beforeHandlers) {
     const result = await handler(
       { systemPrompt: "base prompt" },
       { cwd: process.cwd() },
-    ) as any;
-    if (result?.systemPrompt) {
+    ) as BeforeAgentStartResult | undefined;
+    if (typeof result?.systemPrompt === "string") {
       const added = result.systemPrompt.replace("base prompt", "").trim();
       if (added.includes("LSP")) {
         injectedHint = added;
@@ -70,9 +124,6 @@ test("prompt hint text equals canonical static string (exact match)", async () =
     }
   }
 
-  // The hint should be present (even if no servers are running, the extension
-  // should still inject the hint if at least one server was detected).
-  // If no servers detected at all, the hint may be empty — that's also correct.
   if (injectedHint) {
     assert.equal(injectedHint, PROMPT_HINT, "hint text should match canonical string exactly");
   }
@@ -82,19 +133,17 @@ test("lsp tool is registered", () => {
   const { getRegisteredTool } = setupExtension();
   const tool = getRegisteredTool();
   assert.ok(tool, "lsp tool should be registered");
-  assert.equal(tool.name, "lsp");
+  assert.equal(tool?.name, "lsp");
 });
 
 test("session shutdown triggers cleanup without errors", async () => {
   const { pi } = setupExtension();
 
-  // Simulate session_start first
   const sessionStartHandlers = pi.getHandlers("session_start");
   for (const handler of sessionStartHandlers) {
     await handler({}, { cwd: process.cwd() });
   }
 
-  // Session shutdown should not throw
   const shutdownHandlers = pi.getHandlers("session_shutdown");
   for (const handler of shutdownHandlers) {
     await assert.doesNotReject(async () => handler({}, {}));
@@ -104,7 +153,6 @@ test("session shutdown triggers cleanup without errors", async () => {
 test("session_start detects servers without crashing", async () => {
   const { pi } = setupExtension();
 
-  // Simulate session_start — should complete without error
   const sessionStartHandlers = pi.getHandlers("session_start");
   for (const handler of sessionStartHandlers) {
     await assert.doesNotReject(async () => handler({}, { cwd: process.cwd() }));
@@ -114,20 +162,17 @@ test("session_start detects servers without crashing", async () => {
 test("tool_result handler does not crash on non-write/edit events", async () => {
   const { pi } = setupExtension();
 
-  // Simulate session_start
   const sessionStartHandlers = pi.getHandlers("session_start");
   for (const handler of sessionStartHandlers) {
     await handler({}, { cwd: process.cwd() });
   }
 
-  // Simulate a bash tool_result
   const handlers = pi.getHandlers("tool_result");
   for (const handler of handlers) {
     const result = await handler(
       { toolName: "bash", toolCallId: "tc1", input: { command: "ls" }, result: "output" },
       { cwd: process.cwd() },
     );
-    // Should return undefined (no interception)
     assert.equal(result, undefined);
   }
 });
@@ -135,28 +180,87 @@ test("tool_result handler does not crash on non-write/edit events", async () => 
 test("before_agent_start handler returns systemPrompt with hint when servers detected", async () => {
   const { pi } = setupExtension();
 
-  // Simulate session_start
   const sessionStartHandlers = pi.getHandlers("session_start");
   for (const handler of sessionStartHandlers) {
     await handler({}, { cwd: process.cwd() });
   }
 
-  // Simulate before_agent_start
   const beforeHandlers = pi.getHandlers("before_agent_start");
-  let result: any = undefined;
+  let result: BeforeAgentStartResult | undefined;
   for (const handler of beforeHandlers) {
     result = await handler(
       { systemPrompt: "base prompt" },
       { cwd: process.cwd() },
-    );
+    ) as BeforeAgentStartResult | undefined;
   }
 
-  // Result should include systemPrompt even if no servers found
-  // (the handler still runs; it just may not append the hint)
   if (result?.systemPrompt) {
-    assert.ok(
-      typeof result.systemPrompt === "string",
-      "systemPrompt should be a string",
-    );
+    assert.equal(typeof result.systemPrompt, "string");
   }
+});
+
+test("diagnostics registry stores diagnostics by runtime key for servers with the same name", () => {
+  const registry = createDiagnosticsRegistry();
+  const clientA = new FakeLspClient();
+  const clientB = new FakeLspClient();
+  const serverA = createManagedServer("marksman:/repo/docs", clientA, "marksman");
+  const serverB = createManagedServer("marksman:/repo/notes", clientB, "marksman");
+
+  registry.attach(serverA);
+  registry.attach(serverB);
+
+  const diagnosticsA: LspDiagnostic[] = [{
+    range: {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 1 },
+    },
+    message: "Heading issue",
+  }];
+  const diagnosticsB: LspDiagnostic[] = [{
+    range: {
+      start: { line: 1, character: 0 },
+      end: { line: 1, character: 1 },
+    },
+    message: "Link issue",
+  }];
+
+  clientA.emitDiagnostics("file:///repo/docs/README.md", diagnosticsA);
+  clientB.emitDiagnostics("file:///repo/notes/README.md", diagnosticsB);
+
+  assert.deepEqual(
+    registry.getDiagnostics(serverA.key, "file:///repo/docs/README.md"),
+    diagnosticsA,
+  );
+  assert.deepEqual(
+    registry.getDiagnostics(serverB.key, "file:///repo/notes/README.md"),
+    diagnosticsB,
+  );
+  assert.deepEqual(
+    registry.getDiagnostics(serverA.key, "file:///repo/notes/README.md"),
+    [],
+  );
+});
+
+test("diagnostics registry does not attach duplicate listeners for the same live client", () => {
+  const registry = createDiagnosticsRegistry();
+  const client = new FakeLspClient();
+  const server = createManagedServer("marksman:/repo/docs", client, "marksman");
+
+  registry.attach(server);
+  registry.attach(server);
+
+  assert.equal(client.getDiagnosticsListenerCount(), 1);
+});
+
+test("diagnostics registry reattaches for a restarted client with the same runtime key", () => {
+  const registry = createDiagnosticsRegistry();
+  const firstClient = new FakeLspClient();
+  const secondClient = new FakeLspClient();
+  const serverKey = "marksman:/repo/docs";
+
+  registry.attach(createManagedServer(serverKey, firstClient, "marksman"));
+  registry.attach(createManagedServer(serverKey, secondClient, "marksman"));
+
+  assert.equal(firstClient.getDiagnosticsListenerCount(), 1);
+  assert.equal(secondClient.getDiagnosticsListenerCount(), 1);
 });

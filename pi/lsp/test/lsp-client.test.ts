@@ -3,120 +3,128 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
 import {
-  createFrameParser,
   createLspClient,
   fileUri,
   toLspPosition,
-  type LspClient,
 } from "../lib/lsp-client.ts";
+import type { LspDiagnostic } from "../lib/types.ts";
 
-/**
- * Helper: create a mock stdio pair (stdin writeable, stdout readable)
- * that simulates a language server's stdio transport.
- */
 function createMockStdio() {
-  const serverIn = new PassThrough();   // we write to this (client → server)
-  const serverOut = new PassThrough();  // we read from this (server → client)
+  const serverIn = new PassThrough();
+  const serverOut = new PassThrough();
   return { serverIn, serverOut };
 }
 
-/** Encode a JSON-RPC message into Content-Length framed bytes. */
 function encodeFrame(body: unknown): Buffer {
   const json = JSON.stringify(body);
   const header = `Content-Length: ${Buffer.byteLength(json)}\r\n\r\n`;
   return Buffer.from(header + json);
 }
 
-// --- Frame parser tests ---
+type FramedMessage = Record<string, unknown>;
 
-test("Content-Length framed parsing extracts a single message", () => {
-  const parser = createFrameParser();
-  const body = { jsonrpc: "2.0", id: 1, result: { capabilities: {} } };
-  const frame = encodeFrame(body);
+function createFrameReader(stream: PassThrough) {
+  let buffer = Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let chunkBytes = 0;
+  const queuedMessages: FramedMessage[] = [];
+  const waiters: Array<{
+    resolve: (message: FramedMessage) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = [];
 
-  const messages: unknown[] = [];
-  parser.onMessage((msg) => messages.push(msg));
-  parser.feed(frame);
+  function flushChunks(): void {
+    if (chunkBytes === 0) return;
+    buffer = buffer.length === 0
+      ? Buffer.concat(chunks, chunkBytes)
+      : Buffer.concat([buffer, ...chunks], buffer.length + chunkBytes);
+    chunks.length = 0;
+    chunkBytes = 0;
+  }
 
-  assert.equal(messages.length, 1);
-  assert.deepEqual(messages[0], body);
-});
+  function enqueueMessage(message: FramedMessage): void {
+    const waiter = waiters.shift();
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(message);
+      return;
+    }
+    queuedMessages.push(message);
+  }
 
-test("parser handles chunked frames (split across multiple feeds)", () => {
-  const parser = createFrameParser();
-  const body = { jsonrpc: "2.0", id: 2, result: "hello" };
-  const frame = encodeFrame(body);
+  function tryDrain(): void {
+    flushChunks();
 
-  const messages: unknown[] = [];
-  parser.onMessage((msg) => messages.push(msg));
+    while (true) {
+      const headerEnd = buffer.indexOf("\r\n\r\n");
+      if (headerEnd === -1) return;
 
-  // Feed the frame in small chunks
-  const mid = Math.floor(frame.length / 2);
-  parser.feed(frame.subarray(0, mid));
-  assert.equal(messages.length, 0, "should not emit before full message");
-  parser.feed(frame.subarray(mid));
-  assert.equal(messages.length, 1);
-  assert.deepEqual(messages[0], body);
-});
+      const header = buffer.subarray(0, headerEnd).toString("utf8");
+      const match = header.match(/Content-Length:\s*(\d+)/i);
+      if (!match) {
+        buffer = buffer.subarray(headerEnd + 4);
+        continue;
+      }
 
-test("parser handles sticky frames (multiple messages in one buffer)", () => {
-  const parser = createFrameParser();
-  const body1 = { jsonrpc: "2.0", id: 1, result: "a" };
-  const body2 = { jsonrpc: "2.0", id: 2, result: "b" };
-  const combined = Buffer.concat([encodeFrame(body1), encodeFrame(body2)]);
+      const length = Number(match[1]);
+      const messageStart = headerEnd + 4;
+      const messageEnd = messageStart + length;
+      if (buffer.length < messageEnd) return;
 
-  const messages: unknown[] = [];
-  parser.onMessage((msg) => messages.push(msg));
-  parser.feed(combined);
+      const json = buffer.subarray(messageStart, messageEnd).toString("utf8");
+      buffer = buffer.subarray(messageEnd);
+      enqueueMessage(JSON.parse(json) as FramedMessage);
+    }
+  }
 
-  assert.equal(messages.length, 2);
-  assert.deepEqual(messages[0], body1);
-  assert.deepEqual(messages[1], body2);
-});
+  stream.on("data", (chunk: Buffer) => {
+    chunks.push(chunk);
+    chunkBytes += chunk.length;
+    tryDrain();
+  });
 
-test("parser rejects malformed frame without crashing", () => {
-  const parser = createFrameParser();
-  const messages: unknown[] = [];
-  parser.onMessage((msg) => messages.push(msg));
+  return {
+    nextMessage(timeoutMs = 250): Promise<FramedMessage> {
+      if (queuedMessages.length > 0) {
+        return Promise.resolve(queuedMessages.shift()!);
+      }
 
-  // Feed invalid data that starts with Content-Length but has bad JSON
-  const badFrame = Buffer.from('Content-Length: 5\r\n\r\n{bad}');
-  // Should not crash; message may or may not be emitted depending on parser robustness
-  assert.doesNotThrow(() => parser.feed(badFrame));
-});
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const index = waiters.findIndex((waiter) => waiter.resolve === resolve);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(new Error(`Timed out waiting for frame after ${timeoutMs}ms`));
+        }, timeoutMs);
 
-// --- Request/response correlation ---
+        waiters.push({ resolve, reject, timer });
+        tryDrain();
+      });
+    },
+  };
+}
+
+interface WorkspaceConfigurationParams {
+  items: Array<{ section?: string }>;
+}
 
 test("request/response correlation by id", async () => {
   const { serverIn, serverOut } = createMockStdio();
+  const outgoing = createFrameReader(serverIn);
   const client = createLspClient(serverIn, serverOut);
 
-  // Start a request
-  const requestPromise = client.request("textDocument/hover", { textDocument: { uri: "file:///test.ts" } });
-
-  // Read the request from serverIn
-  const requestData = await new Promise<string>((resolve) => {
-    let buf = "";
-    serverIn.on("data", (chunk: Buffer) => {
-      buf += chunk.toString();
-      // Check if we have a complete message
-      const match = buf.match(/Content-Length: (\d+)\r\n\r\n/);
-      if (match) {
-        const len = parseInt(match[1]!, 10);
-        const headerEnd = buf.indexOf("\r\n\r\n") + 4;
-        if (buf.length >= headerEnd + len) {
-          resolve(buf.substring(headerEnd, headerEnd + len));
-        }
-      }
-    });
+  const requestPromise = client.request("textDocument/hover", {
+    textDocument: { uri: "file:///test.ts" },
   });
 
-  const requestMsg = JSON.parse(requestData);
-  assert.equal(requestMsg.method, "textDocument/hover");
+  const request = await outgoing.nextMessage();
+  assert.equal(request.method, "textDocument/hover");
 
-  // Send response with matching id
-  const response = { jsonrpc: "2.0", id: requestMsg.id, result: { contents: "hover info" } };
-  serverOut.write(encodeFrame(response));
+  serverOut.write(encodeFrame({
+    jsonrpc: "2.0",
+    id: request.id,
+    result: { contents: "hover info" },
+  }));
 
   const result = await requestPromise;
   assert.deepEqual(result, { contents: "hover info" });
@@ -124,74 +132,96 @@ test("request/response correlation by id", async () => {
   client.destroy();
 });
 
-test("notification dispatch (publishDiagnostics)", async () => {
+test("generic notifications are dispatched by method", async () => {
   const { serverIn, serverOut } = createMockStdio();
   const client = createLspClient(serverIn, serverOut);
 
-  const diagnosticsReceived: Array<{ uri: string; diagnostics: unknown[] }> = [];
-  client.onDiagnostics((uri, diagnostics) => {
-    diagnosticsReceived.push({ uri, diagnostics });
+  let received: unknown = undefined;
+  client.onNotification("custom/notification", (params) => {
+    received = params;
   });
 
-  // Server sends a notification
-  const notification = {
+  serverOut.write(encodeFrame({
+    jsonrpc: "2.0",
+    method: "custom/notification",
+    params: { ok: true },
+  }));
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(received, { ok: true });
+
+  client.destroy();
+});
+
+test("publishDiagnostics notifications are routed through onDiagnostics", async () => {
+  const { serverIn, serverOut } = createMockStdio();
+  const client = createLspClient(serverIn, serverOut);
+
+  const received: Array<{ uri: string; diagnostics: LspDiagnostic[] }> = [];
+  client.onDiagnostics((uri, diagnostics) => {
+    received.push({ uri, diagnostics });
+  });
+
+  serverOut.write(encodeFrame({
     jsonrpc: "2.0",
     method: "textDocument/publishDiagnostics",
     params: {
       uri: "file:///test.ts",
-      diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, message: "error" }],
+      diagnostics: [{
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 0, character: 1 },
+        },
+        message: "error",
+      }],
     },
-  };
-  serverOut.write(encodeFrame(notification));
+  }));
 
-  // Wait a tick for the notification to be processed
-  await new Promise((r) => setTimeout(r, 50));
-
-  assert.equal(diagnosticsReceived.length, 1);
-  assert.equal(diagnosticsReceived[0]!.uri, "file:///test.ts");
-  assert.equal(diagnosticsReceived[0]!.diagnostics.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.uri, "file:///test.ts");
+  assert.deepEqual(received[0]?.diagnostics, [{
+    range: {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 1 },
+    },
+    message: "error",
+  }]);
 
   client.destroy();
 });
 
-test("request timeout rejection with deterministic error", async () => {
+test("server-sent requests are handled through onRequest", async () => {
   const { serverIn, serverOut } = createMockStdio();
+  const outgoing = createFrameReader(serverIn);
   const client = createLspClient(serverIn, serverOut);
 
-  // Read and discard the request from serverIn so it doesn't back up
-  serverIn.on("data", () => {});
-
-  // Request with very short timeout — no response will come
-  await assert.rejects(
-    () => client.request("textDocument/hover", {}, 50),
-    (err: Error) => {
-      assert.ok(err.message.includes("timeout") || err.message.includes("Timeout"),
-        `Expected timeout error, got: ${err.message}`);
-      return true;
+  client.onRequest<WorkspaceConfigurationParams, Array<{ enable: boolean }>>(
+    "workspace/configuration",
+    async (params) => {
+      assert.deepEqual(params, { items: [{ section: "typescript" }] });
+      return [{ enable: true }];
     },
   );
 
+  serverOut.write(encodeFrame({
+    jsonrpc: "2.0",
+    id: 99,
+    method: "workspace/configuration",
+    params: { items: [{ section: "typescript" }] },
+  }));
+
+  const response = await outgoing.nextMessage();
+  assert.equal(response.id, 99);
+  assert.deepEqual(response.result, [{ enable: true }]);
+
   client.destroy();
 });
 
-test("textDocument/didOpen emits correct JSON-RPC notification", async () => {
+test("notify emits a JSON-RPC notification without an id", async () => {
   const { serverIn, serverOut } = createMockStdio();
+  const outgoing = createFrameReader(serverIn);
   const client = createLspClient(serverIn, serverOut);
-
-  const received = new Promise<string>((resolve) => {
-    let buf = "";
-    serverIn.on("data", (chunk: Buffer) => {
-      buf += chunk.toString();
-      const match = buf.match(/Content-Length: (\d+)\r\n\r\n/);
-      if (match) {
-        const len = parseInt(match[1]!, 10);
-        const headerEnd = buf.indexOf("\r\n\r\n") + 4;
-        if (buf.length >= headerEnd + len) {
-          resolve(buf.substring(headerEnd, headerEnd + len));
-        }
-      }
-    });
-  });
 
   client.notify("textDocument/didOpen", {
     textDocument: {
@@ -202,49 +232,140 @@ test("textDocument/didOpen emits correct JSON-RPC notification", async () => {
     },
   });
 
-  const msg = JSON.parse(await received);
-  assert.equal(msg.method, "textDocument/didOpen");
-  assert.equal(msg.params.textDocument.uri, "file:///test.ts");
-  assert.equal(msg.id, undefined, "notifications should not have an id");
+  const message = await outgoing.nextMessage();
+  assert.equal(message.method, "textDocument/didOpen");
+  assert.equal(message.id, undefined);
+  assert.equal((message.params as { textDocument: { version: number } }).textDocument.version, 1);
 
   client.destroy();
 });
 
-test("textDocument/didChange emits correct JSON-RPC notification", async () => {
+test("request timeout rejection is deterministic", async () => {
   const { serverIn, serverOut } = createMockStdio();
   const client = createLspClient(serverIn, serverOut);
 
-  const received = new Promise<string>((resolve) => {
-    let buf = "";
-    serverIn.on("data", (chunk: Buffer) => {
-      buf += chunk.toString();
-      const match = buf.match(/Content-Length: (\d+)\r\n\r\n/);
-      if (match) {
-        const len = parseInt(match[1]!, 10);
-        const headerEnd = buf.indexOf("\r\n\r\n") + 4;
-        if (buf.length >= headerEnd + len) {
-          resolve(buf.substring(headerEnd, headerEnd + len));
-        }
-      }
-    });
-  });
-
-  client.notify("textDocument/didChange", {
-    textDocument: { uri: "file:///test.ts", version: 2 },
-    contentChanges: [{ text: "const x = 2;" }],
-  });
-
-  const msg = JSON.parse(await received);
-  assert.equal(msg.method, "textDocument/didChange");
-  assert.equal(msg.params.textDocument.version, 2);
+  await assert.rejects(
+    () => client.request("textDocument/hover", {}, 30),
+    (error: Error) => {
+      assert.match(error.message, /timeout/i);
+      return true;
+    },
+  );
 
   client.destroy();
 });
 
-// --- Utility function tests ---
+test("abort signal rejects the request", async () => {
+  const { serverIn, serverOut } = createMockStdio();
+  const client = createLspClient(serverIn, serverOut);
+  const controller = new AbortController();
+
+  const requestPromise = client.request("textDocument/hover", {}, 5000, controller.signal);
+  controller.abort();
+
+  await assert.rejects(
+    () => requestPromise,
+    (error: Error) => {
+      assert.match(error.message, /abort/i);
+      return true;
+    },
+  );
+
+  client.destroy();
+});
+
+test("destroy rejects pending requests and remains safe after listeners are registered", async () => {
+  const { serverIn, serverOut } = createMockStdio();
+  const client = createLspClient(serverIn, serverOut);
+
+  client.onNotification("custom/notification", () => { });
+  client.onDiagnostics(() => { });
+  client.onRequest("workspace/configuration", () => ([]));
+
+  const pendingRequest = client.request("textDocument/hover", {}, 5000);
+  assert.doesNotThrow(() => client.destroy());
+
+  await assert.rejects(
+    () => pendingRequest,
+    (error: Error) => {
+      assert.match(error.message, /destroyed/i);
+      return true;
+    },
+  );
+
+  assert.doesNotThrow(() => client.destroy());
+});
+
+test("destroy stops incoming notifications and requests from firing callbacks", async () => {
+  const { serverIn, serverOut } = createMockStdio();
+  const outgoing = createFrameReader(serverIn);
+  const client = createLspClient(serverIn, serverOut);
+
+  let notificationCount = 0;
+  let diagnosticsCount = 0;
+  let requestCount = 0;
+
+  client.onNotification("custom/notification", () => {
+    notificationCount += 1;
+  });
+  client.onDiagnostics(() => {
+    diagnosticsCount += 1;
+  });
+  client.onRequest("workspace/configuration", () => {
+    requestCount += 1;
+    return [];
+  });
+
+  client.destroy();
+
+  serverOut.write(encodeFrame({
+    jsonrpc: "2.0",
+    method: "custom/notification",
+    params: { ok: true },
+  }));
+  serverOut.write(encodeFrame({
+    jsonrpc: "2.0",
+    method: "textDocument/publishDiagnostics",
+    params: {
+      uri: "file:///test.ts",
+      diagnostics: [{
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 0, character: 1 },
+        },
+        message: "error",
+      }],
+    },
+  }));
+  serverOut.write(encodeFrame({
+    jsonrpc: "2.0",
+    id: 10,
+    method: "workspace/configuration",
+    params: { items: [{ section: "typescript" }] },
+  }));
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  assert.equal(notificationCount, 0);
+  assert.equal(diagnosticsCount, 0);
+  assert.equal(requestCount, 0);
+  await assert.rejects(() => outgoing.nextMessage(50), /Timed out waiting for frame/);
+});
+
+test("notify is a no-op after destroy", async () => {
+  const { serverIn, serverOut } = createMockStdio();
+  const outgoing = createFrameReader(serverIn);
+  const client = createLspClient(serverIn, serverOut);
+
+  client.destroy();
+  client.notify("textDocument/didSave", {
+    textDocument: { uri: "file:///test.ts" },
+  });
+
+  await assert.rejects(() => outgoing.nextMessage(50), /Timed out waiting for frame/);
+});
 
 test("1-index to 0-index position conversion helper", () => {
-  // User-facing positions are 1-based, LSP is 0-based
   const pos = toLspPosition(10, 5);
   assert.equal(pos.line, 9);
   assert.equal(pos.character, 4);
@@ -259,32 +380,4 @@ test("1-index to 0-index clamps to zero for invalid inputs", () => {
 test("URI conversion helper (file://)", () => {
   const uri = fileUri("/home/user/project/test.ts");
   assert.equal(uri, "file:///home/user/project/test.ts");
-});
-
-test("cancellation safety when abort signal is triggered", async () => {
-  const { serverIn, serverOut } = createMockStdio();
-  const client = createLspClient(serverIn, serverOut);
-
-  // Drain serverIn so it doesn't back-pressure
-  serverIn.on("data", () => {});
-
-  const controller = new AbortController();
-
-  const requestPromise = client.request("textDocument/hover", {}, 5000, controller.signal);
-
-  // Abort immediately
-  controller.abort();
-
-  await assert.rejects(
-    () => requestPromise,
-    (err: Error) => {
-      assert.ok(
-        err.message.includes("abort") || err.message.includes("cancel") || err.name === "AbortError",
-        `Expected abort/cancel error, got: ${err.message}`,
-      );
-      return true;
-    },
-  );
-
-  client.destroy();
 });
