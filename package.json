@@ -28,7 +28,8 @@
       "./pi/tmux-titles/extensions",
       "./pi/web/extensions",
       "./pi/http-bridge/extensions",
-      "./pi/recap/extensions"
+      "./pi/recap/extensions",
+      "./pi/session-stats/extensions"
     ],
     "skills": [
       "./skills"

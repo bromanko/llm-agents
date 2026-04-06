@@ -411,6 +411,34 @@ Integration tests require `typescript-language-server` and `typescript` in PATH:
 nix develop .#lsp-test -c node --experimental-strip-types --test pi/lsp/test/integration/typescript.e2e.test.ts
 ```
 
+## Pi `/session-stats` command
+
+Cross-session token usage and cost reporting.
+
+### Usage
+
+```
+/session-stats [range] [by day|project|model]
+```
+
+### Examples
+
+```
+/session-stats
+/session-stats today
+/session-stats last 7 days
+/session-stats this month by project
+/session-stats 2026-04-01..2026-04-06 by day
+/session-stats all time by model
+```
+
+### Notes
+
+- Scans all saved sessions across all projects on this machine.
+- Only saved sessions are counted. Ephemeral `--no-session` runs are invisible.
+- Ranges are interpreted in local time.
+- Does not invoke a model. Deterministic and read-only.
+
 ## License
 
 MIT
