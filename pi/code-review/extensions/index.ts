@@ -68,10 +68,22 @@ type ReviewResult =
 /** Context available to review functions from the extension framework. */
 export interface ReviewContext {
   hasUI: boolean;
-  model?: string;
+  model?: {
+    provider?: string;
+    id?: string;
+    name?: string;
+    [key: string]: unknown;
+  } | string;
   cwd?: string;
   modelRegistry?: {
-    getApiKey(model: string): Promise<string>;
+    find?(provider: string, modelId: string): unknown;
+    getAll?(): unknown[];
+    getApiKey?(model: unknown): Promise<string | null | undefined>;
+    getApiKeyAndHeaders?(model: unknown): Promise<
+      | { ok: true; apiKey?: string; headers?: Record<string, string> }
+      | { ok: false; error: string }
+    >;
+    getApiKeyForProvider?(provider: string): Promise<string | undefined>;
   };
   ui: {
     notify(message: string, level: NotificationLevel): void;
@@ -87,9 +99,13 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 type PiAiRuntime = {
   complete: (
-    model: string,
+    model: unknown,
     input: { systemPrompt: string; messages: UserMessage[] },
-    options: { apiKey: string; signal?: AbortSignal },
+    options: {
+      apiKey?: string;
+      headers?: Record<string, string>;
+      signal?: AbortSignal;
+    },
   ) => Promise<{
     content: Array<{ type: string; text?: string }>;
     stopReason?: string;
@@ -142,6 +158,83 @@ async function getTuiRuntime(): Promise<TuiRuntime> {
     );
   }
   return tuiRuntimePromise;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function resolveReviewModelObject(ctx: ReviewContext): unknown | null {
+  if (!ctx.model) return null;
+
+  const sessionModel = ctx.model;
+  if (
+    isRecord(sessionModel)
+    && isNonEmptyString(sessionModel.provider)
+    && isNonEmptyString(sessionModel.id)
+  ) {
+    let registryModel = ctx.modelRegistry?.find?.(sessionModel.provider, sessionModel.id);
+
+    if (!registryModel && ctx.modelRegistry?.getAll) {
+      registryModel = ctx.modelRegistry.getAll().find((entry) => {
+        if (!isRecord(entry)) return false;
+        return entry.provider === sessionModel.provider && entry.id === sessionModel.id;
+      });
+    }
+
+    return registryModel ?? sessionModel;
+  }
+
+  return sessionModel;
+}
+
+export async function resolveReviewRequestAuth(
+  ctx: ReviewContext,
+  model: unknown,
+): Promise<{ apiKey?: string; headers?: Record<string, string> }> {
+  const registry = ctx.modelRegistry;
+  if (!registry || !model) return {};
+
+  try {
+    if (typeof registry.getApiKeyAndHeaders === "function") {
+      const result = await registry.getApiKeyAndHeaders(model);
+      if (result.ok) {
+        return {
+          apiKey: isNonEmptyString(result.apiKey) ? result.apiKey : undefined,
+          headers: result.headers,
+        };
+      }
+    }
+
+    if (typeof registry.getApiKey === "function") {
+      const key = await registry.getApiKey(model);
+      if (isNonEmptyString(key)) {
+        return { apiKey: key };
+      }
+    }
+
+    const provider =
+      isRecord(model) && isNonEmptyString(model.provider)
+        ? model.provider
+        : isRecord(ctx.model) && isNonEmptyString(ctx.model.provider)
+          ? ctx.model.provider
+          : undefined;
+
+    if (provider && typeof registry.getApiKeyForProvider === "function") {
+      const key = await registry.getApiKeyForProvider(provider);
+      if (isNonEmptyString(key)) {
+        return { apiKey: key };
+      }
+    }
+  } catch {
+    // Swallow auth-resolution failures and proceed without explicit auth.
+  }
+
+  return {};
 }
 
 export type ReviewDependencies = {
@@ -565,6 +658,17 @@ async function runReviews(
       const doReviews = async () => {
         const findings: Finding[] = [];
         let totalResponseLength = 0;
+        const model = resolveReviewModelObject(ctx);
+
+        if (!model) {
+          return {
+            ok: false as const,
+            cancelled: false as const,
+            error: "No model selected",
+          };
+        }
+
+        const { apiKey, headers } = await resolveReviewRequestAuth(ctx, model);
 
         for (let i = 0; i < skills.length; i++) {
           const skill = skills[i];
@@ -576,7 +680,6 @@ async function runReviews(
           );
 
           const skillContent = fs.readFileSync(skill.path, "utf-8");
-          const apiKey = await ctx.modelRegistry!.getApiKey(ctx.model!);
 
           const systemPrompt = buildSystemPrompt(skillContent, findings);
 
@@ -595,9 +698,9 @@ async function runReviews(
           };
 
           const response = await complete(
-            ctx.model!,
+            model,
             { systemPrompt, messages: [userMessage] },
-            { apiKey, signal: loader.signal },
+            { apiKey, headers, signal: loader.signal },
           );
 
           if (response.stopReason === "aborted") {

@@ -15,6 +15,21 @@
         "aarch64-darwin"
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+
+      # marksman's Nix wrapper sets LD_LIBRARY_PATH for ICU, but macOS needs
+      # DYLD_LIBRARY_PATH (which SIP strips anyway). Work around the .NET ICU
+      # lookup failure by enabling invariant globalization mode.
+      fixMarksman =
+        pkgs:
+        if pkgs.stdenv.hostPlatform.isDarwin then
+          pkgs.marksman.overrideAttrs (old: {
+            postFixup = (old.postFixup or "") + ''
+              wrapProgram $out/bin/marksman \
+                --set DOTNET_SYSTEM_GLOBALIZATION_INVARIANT 1
+            '';
+          })
+        else
+          pkgs.marksman;
     in
     {
       devShells = forAllSystems (pkgs: {
@@ -23,21 +38,21 @@
             pkgs.selfci
 
             # LSP servers
-            pkgs.nodePackages.typescript-language-server
-            pkgs.nodePackages.typescript
+            pkgs.typescript-language-server
+            pkgs.typescript
             pkgs.nil # Nix
-            pkgs.nodePackages.bash-language-server
+            pkgs.bash-language-server
             pkgs.yaml-language-server
-            pkgs.nodePackages.vscode-json-languageserver
-            pkgs.marksman # Markdown
+            pkgs.vscode-json-languageserver
+            (fixMarksman pkgs) # Markdown
           ];
         };
 
         lsp-test = pkgs.mkShell {
           packages = [
             pkgs.selfci
-            pkgs.nodePackages.typescript-language-server
-            pkgs.nodePackages.typescript
+            pkgs.typescript-language-server
+            pkgs.typescript
           ];
         };
       });

@@ -1,0 +1,18 @@
+{
+  "name": "@bromanko/pi-files",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Enhanced file-reading tools for pi",
+  "keywords": [
+    "pi-package"
+  ],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}
