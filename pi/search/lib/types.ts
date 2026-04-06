@@ -54,6 +54,7 @@ export interface GrepToolParams {
 export interface FindToolParams {
   pattern: string;
   path?: string;
+  kind?: "file" | "directory" | "any";
   maxDepth?: number;
   limit?: number;
   offset?: number;
@@ -80,6 +81,13 @@ export interface RgResult {
 }
 
 export type RgExecutor = (args: string[], cwd?: string) => Promise<RgResult>;
+
+export interface FdResult {
+  lines: string[];
+  error: string | null;
+}
+
+export type FdExecutor = (args: string[], cwd?: string) => Promise<FdResult>;
 
 export type SinglePathValidator = (
   requestedPath: string | undefined,
