@@ -60,8 +60,10 @@ This approach is proportionate because it adds one file, uses only stable extens
 
 ## Risks and Countermeasures
 
-**Risk: Pi's system prompt format changes.** The extension strips content by searching for `## /path/to/AGENTS.md\n\n` markers followed by content. If pi changes this format, stripping will silently fail and denied content will reach the LLM.
-Countermeasure: The stripping code checks for the exact marker and does nothing if it is not found, so a format change causes a safe failure (denied files leak through rather than approved files being stripped). The extension logs the denied count via `ctx.ui.notify`, making it visible when stripping succeeded. A future improvement could verify the system prompt actually changed length after stripping.
+**Risk: Pi's system prompt format changes (fail-open).** The extension strips content by searching for `## /path/to/AGENTS.md\n\n` markers followed by content. If pi changes this format, stripping will silently fail and denied content will reach the LLM. This is a **fail-open** design: the exact failure mode the user wanted to prevent (untrusted content reaching the LLM) is what happens when the extension's assumptions break. It is not fail-safe.
+Countermeasure: After stripping, the `before_agent_start` handler performs a post-strip verification: for every path in `deniedPaths`, it checks whether the string `## <path>` still appears in the modified prompt. If any denied path is still present, the extension emits a warning via `ctx.ui.notify` telling the user that stripping failed for those paths, likely due to a pi format change. This makes a fail-open condition visible rather than silent. The stripping logic itself is also covered by unit tests written against pi's exact format, which serve as a canary for upstream changes.
+
+Note: the extension uses two independent exact-string matches — per-file markers (`## /path\n\n`) and the section header (`# Project Context\n\nProject-specific instructions and guidelines:\n\n`). A pi update could change either independently, producing different partial-failure modes. The post-strip verification catches both.
 
 **Risk: Race between pi's context loading and the extension's discovery.** Pi loads context files during resource loading; the extension re-discovers them independently at `session_start`. If the file changes between pi's read and the extension's read, the hash comparison is against different content than what is in the system prompt.
 Countermeasure: This window is extremely narrow (milliseconds during startup). The consequence is that a changed file might be approved based on content slightly different from what is in the prompt for that one session. On the next session, the file will be re-hashed and the approval will be checked again.
@@ -72,19 +74,25 @@ Countermeasure: The notification at the start says how many files need review. A
 **Risk: Non-interactive modes silently deny all files.** When `ctx.hasUI` is false (print mode, JSON mode), the extension denies all pending files without prompting.
 Countermeasure: This is intentional and safe — non-interactive modes should not hang waiting for input. Previously approved files still pass through. The user can pre-approve files by running pi interactively first.
 
+**Risk: UI prompt throws during approval flow.** If `ctx.ui.select` or `ctx.ui.editor` throws (e.g., the user kills the TUI during a prompt, or an internal error occurs), the extension would crash and pi's startup may fail or behave unpredictably.
+Countermeasure: The approval prompt loop in `index.ts` wraps all `ctx.ui.select` and `ctx.ui.editor` calls in a try/catch. On any error, the file is treated as denied for the session (consistent with the fail-safe non-interactive behavior). A warning notification is emitted if possible.
+
+**Risk: Approval store is unwritable.** If `~/.pi/agent/context-approvals.json` cannot be written (permissions, disk full, read-only filesystem), `saveApprovals` would throw and crash the extension mid-session.
+Countermeasure: `saveApprovals` is wrapped in a try/catch in `index.ts`. On write failure, the extension logs a warning via `ctx.ui.notify` and continues with session-only tracking (approvals work for the current session but are not persisted). The user sees a warning and can fix the underlying issue.
+
 
 ## Progress
 
 - [x] (2026-04-06 18:00Z) Research pi extension API, system prompt format, and context file discovery algorithm.
 - [x] (2026-04-06 18:10Z) Write initial implementation of `context-approval.ts`.
 - [x] (2026-04-06 18:10Z) Verify TypeScript compilation against existing extension setup.
-- [ ] Restructure as directory-based extension with `package.json` and test infrastructure.
-- [ ] Extract pure helper functions into a separate module for testability.
-- [ ] Write unit tests for `sha256`, `shortenPath`, `isUserOwnedConfig`.
-- [ ] Write unit tests for `discoverContextFiles` using a temp directory tree.
-- [ ] Write unit tests for `loadApprovals` / `saveApprovals` round-trip.
-- [ ] Write unit tests for system prompt stripping logic.
-- [ ] Write integration test: full session_start flow with mocked `ctx.ui`.
+- [x] (2026-04-06 19:00Z) Restructure as directory-based extension with `package.json` and test infrastructure.
+- [x] (2026-04-06 19:00Z) Extract pure helper functions into `src/helpers.ts` and prompt stripping into `src/prompt.ts`.
+- [x] (2026-04-06 19:05Z) Write unit tests for `sha256`, `shortenPath`, `isUserOwnedConfig`.
+- [x] (2026-04-06 19:05Z) Write unit tests for `discoverContextFiles` using a temp directory tree.
+- [x] (2026-04-06 19:05Z) Write unit tests for `loadApprovals` / `saveApprovals` round-trip.
+- [x] (2026-04-06 19:10Z) Write unit tests for system prompt stripping logic (10 tests).
+- [x] (2026-04-06 19:10Z) All 24 tests passing (14 helpers + 10 prompt).
 - [ ] Manual validation in a real monorepo directory.
 - [ ] Commit.
 
@@ -99,6 +107,11 @@ Countermeasure: This is intentional and safe — non-interactive modes should no
 
 - Observation: The system prompt format uses the absolute path as a heading: `## /absolute/path/to/AGENTS.md\n\n<content>\n\n`. This is consistent between the custom-prompt and default-prompt code paths.
   Evidence: `system-prompt.js` lines 24-26 and 98-100: `prompt += \`## ${filePath}\n\n${content}\n\n\`;`
+
+- Observation: The `before_agent_start` event handler return value is consumed by pi. If the handler returns `{ systemPrompt: <string> }`, pi applies it to `this.agent.state.systemPrompt`. This is the mechanism that makes prompt stripping work.
+  Evidence: `runner.js` lines 598-606: handler result is checked for `result.systemPrompt !== undefined`, and if present, `currentSystemPrompt` is updated and `systemPromptModified` is set to true. The combined result is returned to the caller. `agent-session.js` line 752: calls `emitBeforeAgentStart(expandedText, currentImages, this._baseSystemPrompt)`. Lines 770-776: if `result?.systemPrompt` is truthy, sets `this.agent.state.systemPrompt = result.systemPrompt`; otherwise resets to `this._baseSystemPrompt`.
+
+- Observation: Pi catches extension handler errors internally via try/catch in `runner.js` (lines 610-618) and emits them to `emitError`. A throwing handler does not crash pi — it logs the error and continues with other extensions. However, the session_start handler is in the generic `emit()` path which also catches errors, so an unhandled throw in our session_start handler would be caught by pi but would skip the remaining approval flow.
 
 
 ## Decision Log
@@ -117,6 +130,14 @@ Countermeasure: This is intentional and safe — non-interactive modes should no
 
 - Decision: Implement as a single top-level `.ts` file initially, then restructure as a directory-based extension for testability.
   Rationale: The prototype was useful for validating the approach, but the helper functions (discovery, hashing, prompt stripping) need unit tests. The directory structure matches the existing MCP extension pattern in this repo.
+  Date: 2026-04-06
+
+- Decision: Acknowledge fail-open design and add post-strip verification in v1.
+  Rationale: The extension's stripping mechanism depends on pi's undocumented system prompt format. If the format changes, denied content silently reaches the LLM — the exact failure mode the user is trying to prevent. Rather than deferring verification to a "future improvement," the `verifyStripping` function checks for residual denied-path markers after stripping and emits a visible warning when stripping failed. This converts silent failure into visible failure.
+  Date: 2026-04-06
+
+- Decision: Wrap UI calls and approval store writes in try/catch with fail-safe defaults.
+  Rationale: The `session_start` handler runs during pi startup. An unhandled throw in `ctx.ui.select` or `saveApprovals` would abort the approval flow and potentially leave pi in an inconsistent state. Catching errors and defaulting to "denied" (for UI failures) or session-only tracking (for write failures) keeps the extension robust without compromising the fail-safe principle.
   Date: 2026-04-06
 
 
@@ -151,6 +172,7 @@ The following facts were verified against the current tree on 2026-04-06:
 
 - `~/Code/dbx-nix-config/configs/pi/extensions/package.json` exists and declares workspaces for the directory-based extensions. The `devDependencies` include `@types/node`, `tsx`, and `typescript`.
 - `~/Code/dbx-nix-config/configs/pi/extensions/context-approval.ts` exists as the initial prototype. It compiles cleanly with `tsc --noEmit`.
+- The `before_agent_start` event return value is consumed by pi: if the handler returns `{ systemPrompt: string }`, pi applies it to `this.agent.state.systemPrompt` (verified in `runner.js` lines 598-606 and `agent-session.js` lines 770-776). This is the mechanism that makes prompt stripping effective.
 - `~/Code/dbx-nix-config/configs/pi/settings.nix` includes `extensions = ["~/Code/dbx-nix-config/configs/pi/extensions"];` which causes pi to auto-discover all extensions in that directory.
 - There are 38 `AGENTS.md` / `CLAUDE.md` files under `~/Code/` across multiple repos.
 - There is no `~/.pi/agent/AGENTS.md` (the global config dir has no context file currently).
@@ -211,7 +233,7 @@ In `context-approval/index.ts`, the default export function will import helpers 
 
 In `context-approval/src/helpers.ts`, the following functions will be exported: `sha256(content: string): string`, `shortenPath(path: string, cwd: string): string`, `isUserOwnedConfig(filePath: string): boolean`, `discoverContextFiles(cwd: string): ContextFile[]`, `getApprovalsPath(): string`, `loadApprovals(): ApprovalStore`, `saveApprovals(store: ApprovalStore): void`. The types `ApprovalRecord`, `ApprovalStore`, and `ContextFile` will also be exported.
 
-In `context-approval/src/prompt.ts`, one function will be exported: `stripDeniedContextFiles(systemPrompt: string, deniedPaths: Set<string>): string`. This function encapsulates all the string manipulation logic currently inline in the `before_agent_start` handler.
+In `context-approval/src/prompt.ts`, two functions will be exported: `stripDeniedContextFiles(systemPrompt: string, deniedPaths: Set<string>): string` which encapsulates all the string manipulation logic currently inline in the `before_agent_start` handler, and `verifyStripping(systemPrompt: string, deniedPaths: Set<string>): string[]` which checks whether any denied path strings (`## <path>`) still appear in the prompt after stripping and returns the list of paths that failed to strip.
 
 Tests in `context-approval/test/helpers.test.ts` will cover the pure helper functions using temp directories created with `node:fs/promises` `mkdtemp`. Tests in `context-approval/test/prompt.test.ts` will construct synthetic system prompt strings matching the exact format from `system-prompt.js` and verify stripping behavior.
 
@@ -256,9 +278,15 @@ Move `ApprovalRecord`, `ApprovalStore`, `ContextFile`, `FileVerdict`, `APPROVALS
 
 Extract the system prompt stripping logic from the `before_agent_start` handler into a pure function `stripDeniedContextFiles(systemPrompt: string, deniedPaths: Set<string>): string` in `context-approval/src/prompt.ts`.
 
+Also add a post-strip verification function: `verifyStripping(systemPrompt: string, deniedPaths: Set<string>): string[]`. This function checks whether the string `## <path>` still appears in `systemPrompt` for each path in `deniedPaths`. It returns an array of paths that failed to strip (empty array means success). This is used by the `before_agent_start` handler to emit a warning when stripping silently fails due to a pi format change.
+
 **Step 1.4: Write the new `index.ts` entry point.**
 
-The new `context-approval/index.ts` imports from `./src/helpers.js` and `./src/prompt.js` and contains only the extension factory function with the event handlers and command registration. The logic is identical to the prototype; only the import sources change.
+The new `context-approval/index.ts` imports from `./src/helpers.js` and `./src/prompt.js` and contains only the extension factory function with the event handlers and command registration. The logic is mostly identical to the prototype, with these differences from the import restructuring:
+
+- The `promptForApproval` function wraps the `ctx.ui.select` and `ctx.ui.editor` calls in a try/catch. On any error, the function returns `"denied"` (fail-safe default) and emits a warning notification if possible.
+- The `session_start` handler wraps the `saveApprovals` call in a try/catch. On write failure, it emits a warning via `ctx.ui.notify` and continues with session-only tracking (the in-memory `deniedPaths` set is still correct).
+- The `before_agent_start` handler calls `stripDeniedContextFiles` then `verifyStripping`. If `verifyStripping` returns any paths, it emits a warning: `"⚠️ Failed to strip N denied context file(s) — pi's prompt format may have changed"`. The modified prompt is still returned (partial stripping is better than none).
 
 **Step 1.5: Register the workspace.**
 
@@ -296,7 +324,9 @@ Create `context-approval/test/helpers.test.ts` with the following tests:
 
 - `isUserOwnedConfig returns false for files outside agent dir`: Assert `isUserOwnedConfig("/tmp/other/AGENTS.md")` returns false.
 
-- `discoverContextFiles finds AGENTS.md walking up from cwd`: Create a temp directory tree: `root/AGENTS.md`, `root/sub/AGENTS.md`. Set `PI_CODING_AGENT_DIR` to a separate empty temp dir. Call `discoverContextFiles(join(root, "sub"))`. Assert both files are found, with the root file before the sub file (ancestors are ordered root-first). Restore env after.
+- `discoverContextFiles finds AGENTS.md walking up from cwd`: Create a temp directory tree: `root/AGENTS.md`, `root/sub/AGENTS.md`. Set `PI_CODING_AGENT_DIR` to a separate empty temp dir. Call `discoverContextFiles(join(root, "sub"))`. Assert both files are found, with the root file before the sub file (ancestors are ordered root-first). Restore env after. **Note:** On macOS, `/tmp` is a symlink to `/private/tmp`. Use `realpathSync` on the `mkdtemp` result before using paths in assertions, or the path comparisons will fail.
+
+- `discoverContextFiles includes global dir file first`: Create a temp directory tree: `globalDir/AGENTS.md` (with content "global"), `root/AGENTS.md` (with content "root"). Set `PI_CODING_AGENT_DIR` to `globalDir`. Call `discoverContextFiles(root)`. Assert the first result is the global file and the second is the root file.
 
 - `discoverContextFiles prefers AGENTS.md over CLAUDE.md`: Create a temp directory with both `AGENTS.md` and `CLAUDE.md`. Call `discoverContextFiles`. Assert only `AGENTS.md` is returned.
 
@@ -314,7 +344,7 @@ From `context-approval/`, run:
 
     npm test
 
-Expected output: all tests pass. The number of tests should be 13. Each test name is printed. No failures.
+Expected output: all tests pass. The number of tests should be 14. Each test name is printed. No failures.
 
 ### Milestone 3 steps
 
@@ -358,13 +388,19 @@ Tests:
 
 - `handles context file as last section before date`: Build a prompt where the context file section is immediately followed by `\nCurrent date:` (no skills section). Deny the file. Assert the content is stripped and the date line is preserved.
 
+- `does not produce triple newlines after stripping`: Build a prompt with two context files separated by `\n\n`. Deny the first. Assert the result does not contain `\n\n\n` (three consecutive newlines). The splice should leave clean double-newline boundaries.
+
+- `verifyStripping returns empty array when all denied paths are gone`: Build a prompt, strip a denied file, call `verifyStripping` on the result. Assert it returns `[]`.
+
+- `verifyStripping returns failed paths when stripping missed`: Build a prompt with a context file. Call `verifyStripping` on the *unmodified* prompt with the file in `deniedPaths`. Assert it returns an array containing that path.
+
 **Step 3.2: Run tests.**
 
 From `context-approval/`, run:
 
     npm test
 
-Expected output: all tests pass. The total count should be 20 (13 from helpers + 7 from prompt).
+Expected output: all tests pass. The total count should be 24 (14 from helpers + 10 from prompt).
 
 ### Milestone 4 steps
 
@@ -385,7 +421,15 @@ Edit the AGENTS.md content (add a blank line), start pi again. Verify a prompt a
 
 Run `/context-approvals reset`. Verify the approvals are cleared.
 
-**Step 4.2: Commit.**
+**Step 4.2: Non-interactive mode validation.**
+
+Reset approvals with `/context-approvals reset`, then exit pi. Run pi in non-interactive print mode in a directory with an unapproved AGENTS.md:
+
+    pi --print "what context files do you see?"
+
+Verify that pi does not hang (it should start and produce output). Verify that the unapproved file's content does not appear in the response (it was denied automatically in non-interactive mode). Then run pi interactively, approve the file, exit, and re-run the print command — verify the file's content now appears because it was previously approved.
+
+**Step 4.3: Commit.**
 
 Stage all files in `context-approval/` and the updated workspace `package.json`. Remove the old `context-approval.ts`. Commit with message:
 
@@ -406,16 +450,18 @@ Stage all files in `context-approval/` and the updated workspace `package.json`.
 
 All tests use Node.js built-in test runner (`node:test`) with `node:assert/strict`, executed via `node --import tsx --test test/*.test.ts` from the `context-approval/` directory.
 
-Tests for helpers (13 tests in `test/helpers.test.ts`):
+Tests for helpers (14 tests in `test/helpers.test.ts`):
 
 - `sha256("hello")` returns `"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"`. This is the known SHA-256 digest.
 - `sha256("a") !== sha256("b")` — different inputs produce different hashes.
 - `shortenPath` returns a cwd-relative path, a tilde path, or an absolute path depending on input relationship to cwd and home.
 - `isUserOwnedConfig` returns true only for paths inside the agent dir pointed to by `PI_CODING_AGENT_DIR`.
-- `discoverContextFiles` walks up from cwd, finds files in ancestor order, prefers `AGENTS.md` over `CLAUDE.md`, and includes the global dir.
+- `discoverContextFiles` walks up from cwd, finds files in ancestor order, prefers `AGENTS.md` over `CLAUDE.md`, and includes the global dir. A separate test verifies global dir files appear first.
 - `loadApprovals` / `saveApprovals` round-trips correctly, returns `{}` when file is missing, returns `{}` when file contains invalid JSON.
 
-Tests for prompt stripping (7 tests in `test/prompt.test.ts`):
+All `discoverContextFiles` tests that create temp directories use `realpathSync` on the `mkdtemp` result before using paths in assertions (macOS `/tmp` → `/private/tmp` symlink).
+
+Tests for prompt stripping (10 tests in `test/prompt.test.ts`):
 
 - Stripping one file from a single-file prompt removes the `# Project Context` section entirely.
 - Stripping one of two files leaves the other intact.
@@ -424,6 +470,9 @@ Tests for prompt stripping (7 tests in `test/prompt.test.ts`):
 - A denied path not present in the prompt leaves the prompt unchanged.
 - A prompt with no `# Project Context` section is left unchanged.
 - A context file immediately before `\nCurrent date:` (no skills section) is stripped correctly.
+- No triple-newline artifacts appear after stripping a file between two others.
+- `verifyStripping` returns empty array when all denied paths were successfully removed.
+- `verifyStripping` returns the list of paths that failed to strip when the prompt was not modified.
 
 If the system prompt format claim is false — meaning pi changes how it formats context files — the prompt stripping tests will fail because they are written against the exact format observed in `system-prompt.js`. This is intentional: the tests serve as a canary for format changes.
 
@@ -432,7 +481,7 @@ If the system prompt format claim is false — meaning pi changes how it formats
 
 After all milestones, the following are true:
 
-1. Running `npm test` from `context-approval/` produces 20 passing tests and 0 failures.
+1. Running `npm test` from `context-approval/` produces 24 passing tests and 0 failures.
 
 2. Starting pi in a directory with an unapproved AGENTS.md triggers a review prompt. Approving it stores the hash. Starting pi again in the same directory with the same file triggers no prompt.
 
@@ -521,3 +570,9 @@ In `context-approval/src/prompt.ts`, define and export:
       systemPrompt: string,
       deniedPaths: Set<string>,
     ): string
+
+    /** Returns paths from deniedPaths whose ## marker still appears in the prompt. */
+    export function verifyStripping(
+      systemPrompt: string,
+      deniedPaths: Set<string>,
+    ): string[]

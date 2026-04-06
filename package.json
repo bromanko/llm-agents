@@ -18,6 +18,7 @@
       "./pi/chrome-devtools-mcp/extensions",
       "./pi/ci-guard/extensions",
       "./pi/code-review/extensions",
+      "./pi/context-approval/extensions",
       "./pi/design-studio/extensions",
       "./pi/files/extensions",
       "./pi/git/extensions",
