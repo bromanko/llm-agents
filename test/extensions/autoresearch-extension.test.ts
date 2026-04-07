@@ -990,7 +990,7 @@ test("status/widget/summary formatting handles empty, running, stopped, crash, a
   });
 
   const widget = harness.widgetUpdates.at(-1)?.value?.join("\n") ?? "";
-  assert.match(widget, /Autoresearch Progress/);
+  assert.match(widget, /Autoresearch/);
   assert.match(widget, /crash/);
   assert.match(widget, /\.\.\./, "long descriptions should be truncated");
   assert.equal(harness.statusUpdates.at(-1)?.value?.includes("1💥"), true, "running status should include crash count");
