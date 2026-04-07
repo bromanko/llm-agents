@@ -338,14 +338,20 @@ export default function autoresearchExtension(pi: ExtensionAPI): void {
         (counts.crashes > 0 ? th.fg("warning", ` ${counts.crashes}💥`) : ""),
       );
 
-      const recent = state.results.slice(-8);
+      const maxVisible = 10;
+      const recent = state.results.slice(-maxVisible);
       if (recent.length > 0) {
-        const lines = [th.fg("accent", th.bold("  Autoresearch Progress"))];
-        lines.push(th.fg("muted", `  Goal: ${state.config.goal}`));
-        lines.push(
-          th.fg("muted", `  Baseline: ${formatMetric(state.baseline)} → Best: ${formatMetric(state.bestMetric)}`),
-        );
-        lines.push("");
+        const goalText = state.config.goal.length > 60
+          ? `${state.config.goal.slice(0, 57)}...`
+          : state.config.goal;
+        const lines = [
+          th.fg("accent", th.bold("  Autoresearch")) + th.fg("muted", ` ${goalText}`),
+          th.fg("muted", `  ${formatMetric(state.baseline)} → ${formatMetric(state.bestMetric)}`),
+        ];
+        const hidden = state.results.length - recent.length;
+        if (hidden > 0) {
+          lines.push(th.fg("dim", `  ··· ${hidden} earlier`));
+        }
         for (const result of recent) {
           const desc =
             result.description.length > 50 ? `${result.description.slice(0, 47)}...` : result.description;
