@@ -10,7 +10,6 @@ import {
   type InterceptorDeps,
 } from "../lib/interceptor.ts";
 
-/** Minimal mock diagnostic matching LSP diagnostic shape. */
 interface MockDiagnostic {
   range: {
     start: { line: number; character: number };
@@ -20,18 +19,30 @@ interface MockDiagnostic {
   severity?: number;
 }
 
-/** Creates a minimal InterceptorDeps mock. */
+function createManagedServer() {
+  return {
+    name: "test-server",
+    key: "test-server:/tmp/project",
+    rootDir: "/tmp/project",
+    rootUri: "file:///tmp/project",
+    client: null,
+    lastActivity: Date.now(),
+    documents: new Map(),
+  };
+}
+
 function createMockDeps(overrides?: Partial<InterceptorDeps>): InterceptorDeps {
   return {
     resolveServerForFile: () => null,
     getServerDiagnostics: () => [],
     getServerName: () => "test-server",
-    ensureServerForFile: async () => null,
+    syncDocumentContent: async () => null,
+    saveDocument: async () => { },
     formatFile: async () => null,
     formatOnWrite: true,
     diagnosticsOnWrite: true,
     autoCodeActions: false,
-    diagnosticsTimeoutMs: 100,
+    diagnosticsTimeoutMs: 10,
     ...overrides,
   };
 }
@@ -43,31 +54,24 @@ function createTmpFile(ext = ".ts"): { filePath: string; cleanup: () => void } {
   return { filePath, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-// --- Tests ---
-
 test("intercepts only write and edit results", async () => {
-  const intercepted: string[] = [];
-  const deps = createMockDeps({
+  const interceptor = createToolResultInterceptor(createMockDeps({
     resolveServerForFile: () => "test-server",
-    ensureServerForFile: async () => ({ name: "test-server", client: null, rootUri: "", lastActivity: 0 }),
-  });
-  const interceptor = createToolResultInterceptor(deps);
+    syncDocumentContent: async () => createManagedServer(),
+  }));
 
-  // Should intercept write
   const writeResult = await interceptor({
     toolName: "write",
     toolCallId: "tc1",
     input: { path: "/tmp/test.ts" },
     result: "File written",
   });
-  // Should intercept edit
   const editResult = await interceptor({
     toolName: "edit",
     toolCallId: "tc2",
     input: { path: "/tmp/test.ts" },
     result: "File edited",
   });
-  // Should NOT intercept bash
   const bashResult = await interceptor({
     toolName: "bash",
     toolCallId: "tc3",
@@ -75,17 +79,17 @@ test("intercepts only write and edit results", async () => {
     result: "file list",
   });
 
-  // write and edit may return modified result; bash should return undefined
+  assert.equal(writeResult, undefined);
+  assert.equal(editResult, undefined);
   assert.equal(bashResult, undefined);
 });
 
-test("no-op when diagnosticsOnWrite=false", async () => {
-  const deps = createMockDeps({
+test("no-op when diagnostics and formatting are disabled", async () => {
+  const interceptor = createToolResultInterceptor(createMockDeps({
     diagnosticsOnWrite: false,
     formatOnWrite: false,
     resolveServerForFile: () => "test-server",
-  });
-  const interceptor = createToolResultInterceptor(deps);
+  }));
 
   const result = await interceptor({
     toolName: "write",
@@ -94,36 +98,25 @@ test("no-op when diagnosticsOnWrite=false", async () => {
     result: "File written",
   });
 
-  // When diagnostics and formatting are both off, result should be unmodified
   assert.equal(result, undefined);
 });
 
-test("sends didOpen/didChange notification via ensureServerForFile", async () => {
-  const notifications: string[] = [];
-  const mockClient = {
-    notify: (method: string, _params: unknown) => notifications.push(method),
-    request: async () => null,
-    onDiagnostics: () => { },
-    onNotification: () => { },
-    destroy: () => { },
-  };
-
-  const deps = createMockDeps({
-    resolveServerForFile: () => "test-server",
-    ensureServerForFile: async () => ({
-      name: "test-server",
-      client: mockClient,
-      rootUri: "file:///tmp",
-      lastActivity: Date.now(),
-    }),
-    getServerDiagnostics: () => [],
-    diagnosticsTimeoutMs: 50,
-  });
-  const interceptor = createToolResultInterceptor(deps);
-
+test("delegates document synchronization to the injected sync helper", async () => {
+  const calls: Array<{ filePath: string; content: string }> = [];
   const { filePath, cleanup } = createTmpFile();
+
   try {
     fs.writeFileSync(filePath, "const x = 1;");
+
+    const interceptor = createToolResultInterceptor(createMockDeps({
+      resolveServerForFile: () => "test-server",
+      syncDocumentContent: async (fp, content) => {
+        calls.push({ filePath: fp, content });
+        return createManagedServer();
+      },
+      diagnosticsTimeoutMs: 1,
+    }));
+
     await interceptor({
       toolName: "write",
       toolCallId: "tc1",
@@ -131,11 +124,9 @@ test("sends didOpen/didChange notification via ensureServerForFile", async () =>
       result: "File written",
     });
 
-    // Should have sent didOpen or didChange
-    assert.ok(
-      notifications.some((n) => n === "textDocument/didOpen" || n === "textDocument/didChange"),
-      `Expected didOpen or didChange, got: ${JSON.stringify(notifications)}`,
-    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.filePath, filePath);
+    assert.equal(calls[0]?.content, "const x = 1;");
   } finally {
     cleanup();
   }
@@ -168,30 +159,30 @@ test("suppresses diagnostics block when no diagnostics", () => {
   assert.equal(block, "");
 });
 
-test("format-on-write applies edits and rewrites file", async () => {
+test("format-on-write rewrites the file and re-synchronizes formatted content", async () => {
+  const calls: string[] = [];
+  const syncedContent: string[] = [];
   const { filePath, cleanup } = createTmpFile();
+
   try {
     fs.writeFileSync(filePath, "const   x=1;");
 
-    const deps = createMockDeps({
+    const interceptor = createToolResultInterceptor(createMockDeps({
       resolveServerForFile: () => "test-server",
-      ensureServerForFile: async () => ({
-        name: "test-server",
-        client: {
-          notify: () => { },
-          request: async () => null,
-          onDiagnostics: () => { },
-          onNotification: () => { },
-          destroy: () => { },
-        },
-        rootUri: "file:///tmp",
-        lastActivity: Date.now(),
-      }),
-      formatFile: async () => "const x = 1;\n",
-      getServerDiagnostics: () => [],
-      diagnosticsTimeoutMs: 50,
-    });
-    const interceptor = createToolResultInterceptor(deps);
+      syncDocumentContent: async (_fp, content) => {
+        calls.push("sync");
+        syncedContent.push(content);
+        return createManagedServer();
+      },
+      saveDocument: async () => {
+        calls.push("save");
+      },
+      formatFile: async () => {
+        calls.push("format");
+        return "const x = 1;\n";
+      },
+      diagnosticsTimeoutMs: 1,
+    }));
 
     await interceptor({
       toolName: "write",
@@ -200,8 +191,9 @@ test("format-on-write applies edits and rewrites file", async () => {
       result: "File written",
     });
 
-    const content = fs.readFileSync(filePath, "utf-8");
-    assert.equal(content, "const x = 1;\n");
+    assert.deepEqual(calls, ["sync", "format", "sync", "save"]);
+    assert.deepEqual(syncedContent, ["const   x=1;", "const x = 1;\n"]);
+    assert.equal(fs.readFileSync(filePath, "utf-8"), "const x = 1;\n");
   } finally {
     cleanup();
   }
@@ -209,34 +201,21 @@ test("format-on-write applies edits and rewrites file", async () => {
 
 test("recursion guard prevents infinite loop on rewrite", async () => {
   const { filePath, cleanup } = createTmpFile();
-  let callCount = 0;
+  let formatCalled = 0;
+
   try {
     fs.writeFileSync(filePath, "const x = 1;");
 
-    const deps = createMockDeps({
+    const interceptor = createToolResultInterceptor(createMockDeps({
       resolveServerForFile: () => "test-server",
-      ensureServerForFile: async () => ({
-        name: "test-server",
-        client: {
-          notify: () => { },
-          request: async () => null,
-          onDiagnostics: () => { },
-          onNotification: () => { },
-          destroy: () => { },
-        },
-        rootUri: "file:///tmp",
-        lastActivity: Date.now(),
-      }),
+      syncDocumentContent: async () => createManagedServer(),
       formatFile: async () => {
-        callCount++;
+        formatCalled += 1;
         return "const x = 1;\n";
       },
-      getServerDiagnostics: () => [],
-      diagnosticsTimeoutMs: 50,
-    });
-    const interceptor = createToolResultInterceptor(deps);
+      diagnosticsTimeoutMs: 1,
+    }));
 
-    // First call
     await interceptor({
       toolName: "write",
       toolCallId: "tc1",
@@ -244,7 +223,6 @@ test("recursion guard prevents infinite loop on rewrite", async () => {
       result: "File written",
     });
 
-    // Second call with same toolCallId+path should be guarded
     await interceptor({
       toolName: "write",
       toolCallId: "tc1",
@@ -252,41 +230,29 @@ test("recursion guard prevents infinite loop on rewrite", async () => {
       result: "File written again",
     });
 
-    assert.equal(callCount, 1, "format should only be called once due to recursion guard");
+    assert.equal(formatCalled, 1);
   } finally {
     cleanup();
   }
 });
 
-test("no formatting when formatOnWrite=false", async () => {
+test("no formatting when formatOnWrite is false", async () => {
   const { filePath, cleanup } = createTmpFile();
   let formatCalled = false;
+
   try {
     fs.writeFileSync(filePath, "const   x=1;");
 
-    const deps = createMockDeps({
+    const interceptor = createToolResultInterceptor(createMockDeps({
       formatOnWrite: false,
       resolveServerForFile: () => "test-server",
-      ensureServerForFile: async () => ({
-        name: "test-server",
-        client: {
-          notify: () => { },
-          request: async () => null,
-          onDiagnostics: () => { },
-          onNotification: () => { },
-          destroy: () => { },
-        },
-        rootUri: "file:///tmp",
-        lastActivity: Date.now(),
-      }),
+      syncDocumentContent: async () => createManagedServer(),
       formatFile: async () => {
         formatCalled = true;
         return "const x = 1;\n";
       },
-      getServerDiagnostics: () => [],
-      diagnosticsTimeoutMs: 50,
-    });
-    const interceptor = createToolResultInterceptor(deps);
+      diagnosticsTimeoutMs: 1,
+    }));
 
     await interceptor({
       toolName: "write",
@@ -295,274 +261,95 @@ test("no formatting when formatOnWrite=false", async () => {
       result: "File written",
     });
 
-    assert.equal(formatCalled, false, "format should not be called when formatOnWrite=false");
+    assert.equal(formatCalled, false);
   } finally {
     cleanup();
   }
 });
 
-// --- Bug-fix regression tests ---
-
-test("sends didOpen on first event, didChange on subsequent events for same file", async () => {
-  const notifications: Array<{ method: string; params: unknown }> = [];
-  const mockClient = {
-    notify: (method: string, params: unknown) => notifications.push({ method, params }),
-    request: async () => null,
-    onDiagnostics: () => { },
-    onNotification: () => { },
-    destroy: () => { },
-  };
-
-  const deps = createMockDeps({
-    resolveServerForFile: () => "test-server",
-    ensureServerForFile: async () => ({
-      name: "test-server",
-      client: mockClient,
-      rootUri: "file:///tmp",
-      lastActivity: Date.now(),
-    }),
-    getServerDiagnostics: () => [],
-    diagnosticsTimeoutMs: 50,
-  });
-
-  // Create ONE interceptor and call it twice for the same file
-  const interceptor = createToolResultInterceptor(deps);
-
+test("diagnostics are looked up with the synchronized server key", async () => {
   const { filePath, cleanup } = createTmpFile();
+  let receivedKey = "";
+
   try {
     fs.writeFileSync(filePath, "const x = 1;");
-    await interceptor({
+
+    const interceptor = createToolResultInterceptor(createMockDeps({
+      resolveServerForFile: () => "test-server",
+      syncDocumentContent: async () => createManagedServer(),
+      saveDocument: async () => { },
+      getServerDiagnostics: (serverKey) => {
+        receivedKey = serverKey;
+        return [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          message: "problem",
+        }];
+      },
+      diagnosticsTimeoutMs: 1,
+    }));
+
+    const result = await interceptor({
       toolName: "write",
       toolCallId: "tc1",
       input: { path: filePath },
       result: "File written",
     });
 
-    // Update file content and call again with a different toolCallId
-    fs.writeFileSync(filePath, "const x = 2;");
-    await interceptor({
-      toolName: "edit",
+    assert.equal(receivedKey, "test-server:/tmp/project");
+    assert.ok(result?.result.includes("problem"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("saveDocument runs after the file is synchronized", async () => {
+  const { filePath, cleanup } = createTmpFile();
+  const order: string[] = [];
+
+  try {
+    fs.writeFileSync(filePath, "const x = 1;");
+
+    const interceptor = createToolResultInterceptor(createMockDeps({
+      resolveServerForFile: () => "test-server",
+      syncDocumentContent: async () => {
+        order.push("sync");
+        return createManagedServer();
+      },
+      saveDocument: async () => {
+        order.push("save");
+      },
+      diagnosticsOnWrite: false,
+      formatOnWrite: false,
+    }));
+
+    const disabledInterceptor = createToolResultInterceptor(createMockDeps({
+      resolveServerForFile: () => "test-server",
+      syncDocumentContent: async () => {
+        order.push("sync");
+        return createManagedServer();
+      },
+      saveDocument: async () => {
+        order.push("save");
+      },
+      diagnosticsOnWrite: true,
+      formatOnWrite: false,
+      diagnosticsTimeoutMs: 1,
+    }));
+
+    await disabledInterceptor({
+      toolName: "write",
+      toolCallId: "tc1",
+      input: { path: filePath },
+      result: "File written",
+    });
+
+    assert.deepEqual(order, ["sync", "save"]);
+    assert.equal(await interceptor({
+      toolName: "write",
       toolCallId: "tc2",
       input: { path: filePath },
-      result: "File edited",
-    });
-
-    const methods = notifications.map((n) => n.method);
-    assert.equal(methods[0], "textDocument/didOpen", "first event should send didOpen");
-    assert.equal(methods[1], "textDocument/didChange", "second event should send didChange");
-  } finally {
-    cleanup();
-  }
-});
-
-test("formatFile receives the content read by the interceptor, not stale data", async () => {
-  const receivedContents: string[] = [];
-  const { filePath, cleanup } = createTmpFile();
-
-  try {
-    fs.writeFileSync(filePath, "version-1");
-
-    const deps = createMockDeps({
-      resolveServerForFile: () => "test-server",
-      ensureServerForFile: async () => ({
-        name: "test-server",
-        client: {
-          notify: () => { },
-          request: async () => null,
-          onDiagnostics: () => { },
-          onNotification: () => { },
-          destroy: () => { },
-        },
-        rootUri: "file:///tmp",
-        lastActivity: Date.now(),
-      }),
-      formatFile: async (_fp, _name, content) => {
-        receivedContents.push(content);
-        return null; // no formatting changes
-      },
-      getServerDiagnostics: () => [],
-      diagnosticsTimeoutMs: 50,
-    });
-    const interceptor = createToolResultInterceptor(deps);
-
-    await interceptor({
-      toolName: "write",
-      toolCallId: "tc1",
-      input: { path: filePath },
       result: "File written",
-    });
-
-    assert.equal(receivedContents.length, 1);
-    assert.equal(receivedContents[0], "version-1",
-      "formatFile should receive the exact content the interceptor read from disk");
-
-    // Write new content, call again
-    fs.writeFileSync(filePath, "version-2");
-    await interceptor({
-      toolName: "write",
-      toolCallId: "tc2",
-      input: { path: filePath },
-      result: "File written again",
-    });
-
-    assert.equal(receivedContents.length, 2);
-    assert.equal(receivedContents[1], "version-2",
-      "formatFile should receive updated content on second call");
-  } finally {
-    cleanup();
-  }
-});
-
-test("stale formatting edits do not corrupt file when content matches", async () => {
-  // Regression test: simulates the scenario where formatFile must use the
-  // same content the LSP server has. If formatFile re-read from disk and
-  // the disk had different content, edits would corrupt the file.
-  const { filePath, cleanup } = createTmpFile();
-
-  try {
-    const originalContent = "/**\n * Hello\n */\nfunction foo() {}\n";
-    fs.writeFileSync(filePath, originalContent);
-
-    const deps = createMockDeps({
-      resolveServerForFile: () => "test-server",
-      ensureServerForFile: async () => ({
-        name: "test-server",
-        client: {
-          notify: () => { },
-          request: async () => null,
-          onDiagnostics: () => { },
-          onNotification: () => { },
-          destroy: () => { },
-        },
-        rootUri: "file:///tmp",
-        lastActivity: Date.now(),
-      }),
-      formatFile: async (_fp, _name, content) => {
-        // Simulate a formatter that adds a trailing newline.
-        // Crucially, the edit is relative to `content` (the parameter),
-        // not whatever might be on disk.
-        if (!content.endsWith("\n\n")) {
-          return content + "\n";
-        }
-        return null;
-      },
-      getServerDiagnostics: () => [],
-      diagnosticsTimeoutMs: 50,
-    });
-    const interceptor = createToolResultInterceptor(deps);
-
-    await interceptor({
-      toolName: "write",
-      toolCallId: "tc1",
-      input: { path: filePath },
-      result: "File written",
-    });
-
-    const result = fs.readFileSync(filePath, "utf-8");
-    // The JSDoc opener must NOT be corrupted
-    assert.ok(result.startsWith("/**"), `File should start with /**, got: ${JSON.stringify(result.slice(0, 10))}`);
-    assert.ok(result.includes("function foo()"), "function declaration must be intact");
-  } finally {
-    cleanup();
-  }
-});
-
-test("content passed to formatFile matches what was sent via didOpen/didChange", async () => {
-  // This is the key invariant that prevents corruption: the content
-  // formatFile operates on must be the same content the LSP server has.
-  const { filePath, cleanup } = createTmpFile();
-  let didOpenText: string | null = null;
-  let formatFileContent: string | null = null;
-
-  try {
-    fs.writeFileSync(filePath, "const a = 1;\n");
-
-    const mockClient = {
-      notify: (method: string, params: unknown) => {
-        if (method === "textDocument/didOpen") {
-          didOpenText = (params as any).textDocument.text;
-        } else if (method === "textDocument/didChange") {
-          didOpenText = (params as any).contentChanges[0].text;
-        }
-      },
-      request: async () => null,
-      onDiagnostics: () => {},
-      onNotification: () => {},
-      destroy: () => {},
-    };
-
-    const deps = createMockDeps({
-      resolveServerForFile: () => "test-server",
-      ensureServerForFile: async () => ({
-        name: "test-server",
-        client: mockClient,
-        rootUri: "file:///tmp",
-        lastActivity: Date.now(),
-      }),
-      formatFile: async (_fp, _name, content) => {
-        formatFileContent = content;
-        return null;
-      },
-      getServerDiagnostics: () => [],
-      diagnosticsTimeoutMs: 50,
-    });
-    const interceptor = createToolResultInterceptor(deps);
-
-    await interceptor({
-      toolName: "write",
-      toolCallId: "tc1",
-      input: { path: filePath },
-      result: "File written",
-    });
-
-    assert.ok(didOpenText !== null, "should have sent content to LSP");
-    assert.ok(formatFileContent !== null, "should have called formatFile");
-    assert.equal(formatFileContent, didOpenText,
-      "formatFile must receive exactly the same content that was sent to the LSP server");
-  } finally {
-    cleanup();
-  }
-});
-
-test("auto code actions not applied when autoCodeActions=false (default)", async () => {
-  const { filePath, cleanup } = createTmpFile();
-  let codeActionsCalled = false;
-  try {
-    fs.writeFileSync(filePath, "const x: string = 1;");
-
-    const deps = createMockDeps({
-      autoCodeActions: false,
-      resolveServerForFile: () => "test-server",
-      ensureServerForFile: async () => ({
-        name: "test-server",
-        client: {
-          notify: () => { },
-          request: async (_method: string) => {
-            if (_method === "textDocument/codeAction") {
-              codeActionsCalled = true;
-            }
-            return null;
-          },
-          onDiagnostics: () => { },
-          onNotification: () => { },
-          destroy: () => { },
-        },
-        rootUri: "file:///tmp",
-        lastActivity: Date.now(),
-      }),
-      getServerDiagnostics: () => [],
-      diagnosticsTimeoutMs: 50,
-    });
-    const interceptor = createToolResultInterceptor(deps);
-
-    await interceptor({
-      toolName: "write",
-      toolCallId: "tc1",
-      input: { path: filePath },
-      result: "File written",
-    });
-
-    assert.equal(codeActionsCalled, false, "code actions should not be requested when disabled");
+    }), undefined);
   } finally {
     cleanup();
   }

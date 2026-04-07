@@ -879,7 +879,13 @@ export default function autoresearchExtension(pi: ExtensionAPI): void {
 
   pi.on("session_fork", async (_event: unknown, ctx: ExtensionContext) => {
     restoreState(ctx);
-    updateUI(ctx);
+    if (state?.running) {
+      updateUI(ctx);
+      ctx.ui.notify("Autoresearch resuming after session fork.", "info");
+      continueLoop(ctx);
+    } else {
+      updateUI(ctx);
+    }
   });
 }
 

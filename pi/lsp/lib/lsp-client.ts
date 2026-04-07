@@ -1,18 +1,14 @@
-/**
- * Stdio JSON-RPC 2.0 client for LSP servers.
- *
- * Communicates over stdin/stdout using Content-Length framed messages
- * as specified by the LSP base protocol. Provides:
- * - Request/response correlation by auto-incrementing id
- * - Notification dispatch (e.g. publishDiagnostics)
- * - Request timeout and abort signal support
- * - Buffered frame parser that handles chunked/sticky messages
- */
-
 import type { Writable, Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import {
+  createMessageConnection,
+  StreamMessageReader,
+  StreamMessageWriter,
+  type Disposable,
+  type MessageConnection,
+} from "vscode-jsonrpc/node.js";
 
-// --- Types ---
+import type { LspDiagnostic } from "./types.ts";
 
 export interface LspPosition {
   line: number;
@@ -20,86 +16,17 @@ export interface LspPosition {
 }
 
 export interface LspClient {
-  /** Send a JSON-RPC request and wait for the response. */
   request<T = unknown>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T>;
-  /** Send a JSON-RPC notification (no response expected). */
   notify(method: string, params: unknown): void;
-  /** Register a callback for publishDiagnostics notifications. */
-  onDiagnostics(cb: (uri: string, diagnostics: unknown[]) => void): void;
-  /** Register a callback for any notification by method name. */
+  onDiagnostics(cb: (uri: string, diagnostics: LspDiagnostic[]) => void): void;
   onNotification(method: string, cb: (params: unknown) => void): void;
-  /** Tear down the client and clean up resources. */
+  onRequest<TParams = unknown, TResult = unknown>(
+    method: string,
+    cb: (params: TParams) => TResult | Promise<TResult>,
+  ): void;
   destroy(): void;
 }
 
-// --- Frame Parser ---
-
-export interface FrameParser {
-  feed(data: Buffer): void;
-  onMessage(cb: (msg: unknown) => void): void;
-}
-
-/**
- * Create a Content-Length frame parser for LSP's base protocol.
- *
- * Handles chunked delivery (message split across multiple `feed` calls)
- * and sticky frames (multiple messages in one buffer).
- */
-export function createFrameParser(): FrameParser {
-  let buffer = Buffer.alloc(0);
-  let messageCallback: ((msg: unknown) => void) | null = null;
-
-  function tryParse(): void {
-    while (true) {
-      // Look for the header separator
-      const headerEnd = buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) return;
-
-      // Extract Content-Length from header
-      const header = buffer.subarray(0, headerEnd).toString("ascii");
-      const match = header.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        // Malformed header — skip past the separator and try again
-        buffer = buffer.subarray(headerEnd + 4);
-        continue;
-      }
-
-      const contentLength = parseInt(match[1]!, 10);
-      const messageStart = headerEnd + 4;
-      const messageEnd = messageStart + contentLength;
-
-      // Do we have the full body yet?
-      if (buffer.length < messageEnd) return;
-
-      const bodyStr = buffer.subarray(messageStart, messageEnd).toString("utf-8");
-      buffer = buffer.subarray(messageEnd);
-
-      try {
-        const parsed = JSON.parse(bodyStr);
-        if (messageCallback) messageCallback(parsed);
-      } catch {
-        // Malformed JSON — skip this message, continue parsing
-      }
-    }
-  }
-
-  return {
-    feed(data: Buffer) {
-      buffer = Buffer.concat([buffer, data]);
-      tryParse();
-    },
-    onMessage(cb) {
-      messageCallback = cb;
-    },
-  };
-}
-
-// --- Position/URI helpers ---
-
-/**
- * Convert 1-indexed (user-facing) line/column to 0-indexed LSP position.
- * Clamps to zero for invalid inputs.
- */
 export function toLspPosition(line: number, column: number): LspPosition {
   return {
     line: Math.max(0, line - 1),
@@ -107,153 +34,162 @@ export function toLspPosition(line: number, column: number): LspPosition {
   };
 }
 
-/** Convert an absolute file path to a file:// URI. */
 export function fileUri(absolutePath: string): string {
   return pathToFileURL(absolutePath).href;
 }
 
-// --- Client Factory ---
-
 interface PendingRequest {
-  resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  cleanup: () => void;
 }
 
-/**
- * Create an LSP client that communicates over the given stdio streams.
- *
- * @param stdin  - Writable stream connected to the server's stdin
- * @param stdout - Readable stream connected to the server's stdout
- */
 export function createLspClient(stdin: Writable, stdout: Readable): LspClient {
-  let nextId = 1;
-  const pending = new Map<number, PendingRequest>();
-  const notificationListeners = new Map<string, Array<(params: unknown) => void>>();
-  const parser = createFrameParser();
+  const reader = new StreamMessageReader(stdout);
+  const writer = new StreamMessageWriter(stdin);
+  const connection: MessageConnection = createMessageConnection(reader, writer);
+  const disposables = new Set<Disposable>();
+  const pending = new Set<PendingRequest>();
+  let destroyed = false;
 
-  // Wire up the parser to the server's stdout
-  const onData = (chunk: Buffer) => parser.feed(chunk);
-  stdout.on("data", onData);
+  connection.listen();
 
-  parser.onMessage((msg: unknown) => {
-    const m = msg as Record<string, unknown>;
-
-    if ("id" in m && m.id !== undefined && m.id !== null) {
-      // This is a response to a request
-      const id = typeof m.id === "number" ? m.id : parseInt(String(m.id), 10);
-      const entry = pending.get(id);
-      if (entry) {
-        pending.delete(id);
-        clearTimeout(entry.timer);
-        if ("error" in m && m.error) {
-          const err = m.error as { message?: string; code?: number };
-          entry.reject(new Error(`LSP error ${err.code ?? ""}: ${err.message ?? "unknown"}`));
-        } else {
-          entry.resolve(m.result);
-        }
-      }
-    } else if ("method" in m) {
-      // This is a notification from the server
-      const method = m.method as string;
-      const params = m.params as unknown;
-      const listeners = notificationListeners.get(method);
-      if (listeners) {
-        for (const cb of listeners) {
-          try {
-            cb(params);
-          } catch {
-            // Don't let listener errors crash the client
-          }
-        }
-      }
-    }
+  connection.onError((_error) => {
+    // The underlying json-rpc library already routes transport errors through
+    // request promises and connection lifecycle events. Keep this handler so
+    // those errors do not become unhandled event noise.
   });
 
-  function sendMessage(msg: unknown): void {
-    const json = JSON.stringify(msg);
-    const header = `Content-Length: ${Buffer.byteLength(json)}\r\n\r\n`;
-    stdin.write(header + json);
+  function destroyPending(reason: Error): void {
+    for (const entry of Array.from(pending)) {
+      entry.cleanup();
+      entry.reject(reason);
+    }
   }
 
-  function addNotificationListener(method: string, cb: (params: unknown) => void): void {
-    const existing = notificationListeners.get(method) ?? [];
-    existing.push(cb);
-    notificationListeners.set(method, existing);
-  }
+  function trackRequest<T>(
+    work: Promise<T>,
+    method: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (destroyed) {
+        reject(new Error("Client destroyed"));
+        return;
+      }
 
-  const client: LspClient = {
-    request<T = unknown>(method: string, params: unknown, timeoutMs = 30000, signal?: AbortSignal): Promise<T> {
-      return new Promise<T>((resolve, reject) => {
-        if (signal?.aborted) {
-          reject(new Error("Request aborted"));
-          return;
+      if (signal?.aborted) {
+        reject(new Error("Request aborted"));
+        return;
+      }
+
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
         }
+        if (signal && onAbort) {
+          signal.removeEventListener("abort", onAbort);
+        }
+        pending.delete(pendingEntry);
+      };
 
-        const id = nextId++;
-        const msg = { jsonrpc: "2.0", id, method, params };
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn();
+      };
 
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error(`LSP request timeout: ${method} (id=${id}) after ${timeoutMs}ms`));
+      const pendingEntry: PendingRequest = {
+        cleanup,
+        reject: (reason) => finish(() => reject(reason)),
+      };
+
+      pending.add(pendingEntry);
+
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          finish(() => reject(new Error(`LSP request timeout: ${method} after ${timeoutMs}ms`)));
         }, timeoutMs);
+      }
 
-        const entry: PendingRequest = {
-          resolve: resolve as (value: unknown) => void,
-          reject,
-          timer,
+      if (signal) {
+        onAbort = () => {
+          finish(() => reject(new Error("Request aborted")));
         };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
 
-        // Handle abort signal
-        if (signal) {
-          const onAbort = () => {
-            pending.delete(id);
-            clearTimeout(timer);
-            reject(new Error("Request aborted"));
-          };
-          signal.addEventListener("abort", onAbort, { once: true });
-          // Clean up listener when request completes
-          const origResolve = entry.resolve;
-          const origReject = entry.reject;
-          entry.resolve = (value) => {
-            signal.removeEventListener("abort", onAbort);
-            origResolve(value);
-          };
-          entry.reject = (reason) => {
-            signal.removeEventListener("abort", onAbort);
-            origReject(reason);
-          };
-        }
+      work.then(
+        (value) => finish(() => resolve(value)),
+        (error) => {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          finish(() => reject(normalized));
+        },
+      );
+    });
+  }
 
-        pending.set(id, entry);
-        sendMessage(msg);
-      });
+  return {
+    request<T = unknown>(method: string, params: unknown, timeoutMs = 30000, signal?: AbortSignal): Promise<T> {
+      const work = connection.sendRequest(method, params) as Promise<T>;
+      return trackRequest(work, method, timeoutMs, signal);
     },
 
     notify(method: string, params: unknown): void {
-      sendMessage({ jsonrpc: "2.0", method, params });
-    },
-
-    onDiagnostics(cb: (uri: string, diagnostics: unknown[]) => void): void {
-      addNotificationListener("textDocument/publishDiagnostics", (params) => {
-        const p = params as { uri: string; diagnostics: unknown[] };
-        cb(p.uri, p.diagnostics ?? []);
+      if (destroyed) return;
+      void connection.sendNotification(method, params).catch(() => {
+        // Best effort. Notifications are fire-and-forget.
       });
     },
 
+    onDiagnostics(cb: (uri: string, diagnostics: LspDiagnostic[]) => void): void {
+      const disposable = connection.onNotification("textDocument/publishDiagnostics", (params: unknown) => {
+        const payload = (params ?? {}) as { uri?: string; diagnostics?: LspDiagnostic[] };
+        if (typeof payload.uri !== "string") return;
+        cb(payload.uri, payload.diagnostics ?? []);
+      });
+      disposables.add(disposable);
+    },
+
     onNotification(method: string, cb: (params: unknown) => void): void {
-      addNotificationListener(method, cb);
+      const disposable = connection.onNotification(method, cb);
+      disposables.add(disposable);
+    },
+
+    onRequest<TParams = unknown, TResult = unknown>(
+      method: string,
+      cb: (params: TParams) => TResult | Promise<TResult>,
+    ): void {
+      const disposable = connection.onRequest(method, (params: TParams) => cb(params));
+      disposables.add(disposable);
     },
 
     destroy(): void {
-      stdout.removeListener("data", onData);
-      for (const [id, entry] of pending) {
-        clearTimeout(entry.timer);
-        entry.reject(new Error("Client destroyed"));
-        pending.delete(id);
+      if (destroyed) return;
+      destroyed = true;
+
+      destroyPending(new Error("Client destroyed"));
+
+      for (const disposable of disposables) {
+        try {
+          disposable.dispose();
+        } catch {
+          // Best effort.
+        }
+      }
+      disposables.clear();
+
+      try {
+        connection.dispose();
+      } catch {
+        // Best effort.
       }
     },
   };
-
-  return client;
 }

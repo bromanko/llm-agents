@@ -1,13 +1,6 @@
-/**
- * Unified `lsp` tool definition.
- *
- * Provides a single tool with an `action` enum that routes to the
- * appropriate LSP request. Uses plain JSON schema (no TypeBox).
- */
-
 import * as path from "node:path";
 
-import { LSP_ACTIONS, type LspAction, type LspToolParams, type LanguageStatus } from "./types.ts";
+import { LSP_ACTIONS, type LspAction, type LspDiagnostic, type LspToolParams, type LanguageStatus } from "./types.ts";
 import { toLspPosition, fileUri } from "./lsp-client.ts";
 import type { ManagedServer } from "./server-manager.ts";
 import type { LspClient } from "./lsp-client.ts";
@@ -20,17 +13,6 @@ import {
   renderCodeActions,
   renderCallItems,
 } from "./render.ts";
-
-// --- Types ---
-
-interface LspDiagnostic {
-  range: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
-  };
-  message: string;
-  severity?: number;
-}
 
 interface LspLocation {
   uri: string;
@@ -52,15 +34,14 @@ export interface LspToolDeps {
   listLanguagesStatus: () => LanguageStatus[];
   resolveServerForFile: (filePath: string) => string | null;
   ensureServerForFile: (filePath: string) => Promise<ManagedServer | null>;
-  getServerDiagnostics: (serverName: string, uri: string) => LspDiagnostic[];
-  getServerName: (serverName: string) => string;
+  syncDocumentFromDisk: (filePath: string) => Promise<ManagedServer | null>;
+  getServerDiagnostics: (serverKey: string, uri: string) => LspDiagnostic[];
+  getServerName: (name: string) => string;
 }
 
 interface ToolResult {
   content: Array<{ type: "text"; text: string }>;
 }
-
-// --- Action validation ---
 
 const VALID_ACTIONS: ReadonlySet<LspAction> = new Set(LSP_ACTIONS);
 
@@ -73,8 +54,6 @@ const NON_POSITION_ACTIONS: ReadonlySet<LspAction> = new Set([
 const POSITION_ACTIONS: ReadonlySet<LspAction> = new Set(
   LSP_ACTIONS.filter((action) => !NON_POSITION_ACTIONS.has(action)),
 );
-
-// --- Schema ---
 
 const parameters = {
   type: "object",
@@ -113,8 +92,6 @@ const parameters = {
   additionalProperties: false,
 } as const;
 
-// --- Helpers ---
-
 function textResult(text: string): ToolResult {
   return { content: [{ type: "text" as const, text }] };
 }
@@ -142,8 +119,6 @@ function normalizeLocationResult(result: LocationResult): LspLocation | LspLocat
     .filter((location): location is LspLocation => location !== null);
 }
 
-// --- Tool factory ---
-
 export function createLspToolDefinition(deps: LspToolDeps) {
   return {
     name: "lsp",
@@ -159,53 +134,44 @@ export function createLspToolDefinition(deps: LspToolDeps) {
     ): Promise<ToolResult> {
       const action = params.action;
 
-      // Validate action
       if (!VALID_ACTIONS.has(action)) {
         return errorResult(`Unsupported action: "${action}". Valid actions: ${Array.from(VALID_ACTIONS).join(", ")}`);
       }
 
-      // Languages doesn't need a file
       if (action === "languages") {
         return textResult(renderLanguages(deps.listLanguagesStatus()));
       }
 
-      // All other actions require a file
       if (!params.file) {
         return errorResult(`Missing required parameter "file" for action "${action}".`);
       }
       const filePath = path.resolve(params.file);
       const uri = fileUri(filePath);
 
-      // Position-based actions require line and column
       if (POSITION_ACTIONS.has(action) && (params.line === undefined || params.column === undefined)) {
         return errorResult(`Missing required parameters "line" and "column" for action "${action}".`);
       }
 
-      // Diagnostics action: return cached diagnostics
-      if (action === "diagnostics") {
-        const serverName = deps.resolveServerForFile(filePath);
-        if (!serverName) {
-          return errorResult(`No language server available for ${filePath}`);
-        }
-        const server = await deps.ensureServerForFile(filePath);
-        if (!server) {
-          return errorResult(`Failed to start language server for ${filePath}`);
-        }
-        const diagnostics = deps.getServerDiagnostics(serverName, uri);
-        return textResult(renderDiagnostics(filePath, diagnostics));
-      }
-
-      // Ensure server is running
       const serverName = deps.resolveServerForFile(filePath);
       if (!serverName) {
         return errorResult(`No language server available for ${filePath}`);
       }
-      const server = await deps.ensureServerForFile(filePath);
-      if (!server || !server.client) {
+
+      const syncedServer = await deps.syncDocumentFromDisk(filePath);
+      if (!syncedServer) {
+        return errorResult(`Failed to synchronize language server document for ${filePath}`);
+      }
+
+      if (action === "diagnostics") {
+        const diagnostics = deps.getServerDiagnostics(syncedServer.key, uri);
+        return textResult(renderDiagnostics(filePath, diagnostics));
+      }
+
+      if (!syncedServer.client) {
         return errorResult(`Language server "${serverName}" is not running.`);
       }
 
-      const client: LspClient = server.client;
+      const client: LspClient = syncedServer.client;
       const position = params.line !== undefined && params.column !== undefined
         ? toLspPosition(params.line, params.column)
         : { line: 0, character: 0 };
@@ -247,18 +213,16 @@ export function createLspToolDefinition(deps: LspToolDeps) {
 
           case "symbols": {
             if (params.query) {
-              // Workspace symbols
               const result = await client.request("workspace/symbol", {
                 query: params.query,
               });
               return textResult(renderSymbols(result as any));
-            } else {
-              // Document symbols
-              const result = await client.request("textDocument/documentSymbol", {
-                textDocument: { uri },
-              });
-              return textResult(renderSymbols(result as any));
             }
+
+            const result = await client.request("textDocument/documentSymbol", {
+              textDocument: { uri },
+            });
+            return textResult(renderSymbols(result as any));
           }
 
           case "rename": {
@@ -271,7 +235,6 @@ export function createLspToolDefinition(deps: LspToolDeps) {
               newName: params.new_name,
             });
             if (!result) return textResult("No rename edits returned.");
-            // For now, just report what would change
             return textResult(`Rename result: ${JSON.stringify(result, null, 2)}`);
           }
 
@@ -279,13 +242,12 @@ export function createLspToolDefinition(deps: LspToolDeps) {
             const result = await client.request("textDocument/codeAction", {
               textDocument: { uri },
               range: { start: position, end: position },
-              context: { diagnostics: deps.getServerDiagnostics(serverName, uri) },
+              context: { diagnostics: deps.getServerDiagnostics(syncedServer.key, uri) },
             });
             return textResult(renderCodeActions(result as any));
           }
 
           case "incoming_calls": {
-            // Call hierarchy: first prepare, then incoming
             const prepared = await client.request("textDocument/prepareCallHierarchy", {
               textDocument: { uri },
               position,
