@@ -3,6 +3,7 @@ export type FixLevel = "high" | "medium" | "low" | "all";
 export interface ReviewOptions {
   range: string;
   fixLevel?: FixLevel;
+  reportLevel?: FixLevel;
 }
 
 export interface ParsedReviewArgs {
@@ -19,7 +20,7 @@ export interface RangeDiffResult {
 }
 
 export const REVIEW_USAGE =
-  "Usage: /review <language> [types...] [-r|--revisions <range>] [--fix <high|medium|low|all>]";
+  "Usage: /review <language> [types...] [-r|--revisions <range>] [--fix <high|medium|low|all>] [--report <high|medium|low|all>]";
 
 /** Pattern for safe VCS revision range characters. */
 const SAFE_RANGE_PATTERN = /^[a-zA-Z0-9@._~^:\-\/]+$/;
@@ -84,24 +85,28 @@ export function parseReviewArgs(args: string): ParsedReviewArgs {
       continue;
     }
 
-    if (token === "--fix") {
+    if (token === "--fix" || token === "--report") {
       const value = tokens[i + 1];
       if (!value || value.startsWith("-")) {
         return {
           ...result,
-          error: `Missing value for --fix. ${REVIEW_USAGE}`,
+          error: `Missing value for ${token}. ${REVIEW_USAGE}`,
         };
       }
 
-      const fixLevel = normalizeFixLevel(value);
-      if (!fixLevel) {
+      const level = normalizeFixLevel(value);
+      if (!level) {
         return {
           ...result,
-          error: `Invalid --fix level "${sanitizeForDisplay(value)}". Expected one of: high, medium, low, all.`,
+          error: `Invalid ${token} level "${sanitizeForDisplay(value)}". Expected one of: high, medium, low, all.`,
         };
       }
 
-      result.options.fixLevel = fixLevel;
+      if (token === "--fix") {
+        result.options.fixLevel = level;
+      } else {
+        result.options.reportLevel = level;
+      }
       i += 1;
       continue;
     }
@@ -118,6 +123,13 @@ export function parseReviewArgs(args: string): ParsedReviewArgs {
     } else {
       result.types.push(token);
     }
+  }
+
+  if (result.options.fixLevel && result.options.reportLevel) {
+    return {
+      ...result,
+      error: "Cannot use --fix and --report together. Choose one post-review action.",
+    };
   }
 
   return result;

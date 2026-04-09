@@ -1,14 +1,21 @@
+import * as fs from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
   buildBulkFixMessage,
+  buildFindingsReport,
   buildSystemPrompt,
+  detectReviewOutputMode,
+  executeReviewSkills,
   extractResponseText,
   matchesFixThreshold,
   registerReviewCommand,
+  resetReviewStdoutStateForTests,
   resolveReviewModelObject,
   resolveReviewRequestAuth,
+  setOutputGuardModuleLoaderForTests,
+  writeReviewStdout,
   type ReviewContext,
   type ReviewDependencies,
 } from "../../pi/code-review/extensions/index.ts";
@@ -114,6 +121,34 @@ function setupReviewCommand(overrides: ReviewDependencies = {}) {
   };
 }
 
+async function captureProcessWrites<T>(
+  fn: (captured: { stdout: string[]; stderr: string[] }) => Promise<T> | T,
+): Promise<T> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+
+  (process.stdout.write as unknown as (chunk: unknown, ...args: unknown[]) => boolean) =
+    ((chunk: unknown) => {
+      stdout.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+
+  (process.stderr.write as unknown as (chunk: unknown, ...args: unknown[]) => boolean) =
+    ((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+  try {
+    return await fn({ stdout, stderr });
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+}
+
 test("/review gleam uses default @ range and interactive flow when --fix is omitted", async () => {
   const ranges: string[] = [];
   let processCalls = 0;
@@ -212,6 +247,312 @@ test("/review gleam --fix medium queues HIGH and MEDIUM findings", async () => {
   assert.match(followUps[0]!.message, /HIGH: high-find/);
   assert.match(followUps[0]!.message, /MEDIUM: medium-find/);
   assert.doesNotMatch(followUps[0]!.message, /LOW: low-find/);
+});
+
+test("/review gleam still errors without UI when --report is not present", async () => {
+  const { review, ctx, notifications } = setupReviewCommand({
+    detectOutputMode: () => "interactive",
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam", ctx);
+
+  assert.ok(
+    notifications.some((n) => n.message.includes("interactive terminal")),
+    `Expected interactive terminal notification, got: ${JSON.stringify(notifications)}`,
+  );
+});
+
+test("/review gleam --report all in print mode outputs report and bypasses triage", async () => {
+  let capturedReport: string | undefined;
+  let processCalls = 0;
+  let queueCalls = 0;
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => {
+      capturedReport = report;
+    },
+    runReviews: async () => ({
+      ok: true,
+      findings: [sampleFinding("MEDIUM", "test-find")],
+      totalResponseLength: 100,
+    }),
+    processFindingActions: async () => {
+      processCalls += 1;
+      return {
+        queuedFixCount: 0,
+        queueFailures: 0,
+        stoppedAt: null,
+      };
+    },
+    queueFixFollowUp: async () => {
+      queueCalls += 1;
+      return { ok: true as const };
+    },
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.ok(capturedReport);
+  assert.match(capturedReport!, /test-find/);
+  assert.equal(processCalls, 0);
+  assert.equal(queueCalls, 0);
+});
+
+test("/review gleam --report all in interactive mode notifies user to use pi -p", async () => {
+  const { review, ctx, notifications } = setupReviewCommand({
+    detectOutputMode: () => "interactive",
+  });
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.ok(
+    notifications.some((n) => n.message.includes("pi -p")),
+    `Expected pi -p notification, got: ${JSON.stringify(notifications)}`,
+  );
+});
+
+test("/review gleam --report high includes only HIGH findings in report", async () => {
+  let capturedReport = "";
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => {
+      capturedReport = report;
+    },
+    runReviews: async () => ({
+      ok: true,
+      findings: [
+        sampleFinding("HIGH", "high-find"),
+        sampleFinding("MEDIUM", "medium-find"),
+        sampleFinding("LOW", "low-find"),
+      ],
+      totalResponseLength: 420,
+    }),
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report high", ctx);
+
+  assert.match(capturedReport, /high-find/);
+  assert.doesNotMatch(capturedReport, /medium-find/);
+  assert.doesNotMatch(capturedReport, /low-find/);
+  assert.match(capturedReport, /Findings: 1 of 3 matched/);
+});
+
+test("/review gleam --report medium includes HIGH and MEDIUM findings", async () => {
+  let capturedReport = "";
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => {
+      capturedReport = report;
+    },
+    runReviews: async () => ({
+      ok: true,
+      findings: [
+        sampleFinding("HIGH", "high-find"),
+        sampleFinding("MEDIUM", "medium-find"),
+        sampleFinding("LOW", "low-find"),
+      ],
+      totalResponseLength: 420,
+    }),
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report medium", ctx);
+
+  assert.match(capturedReport, /high-find/);
+  assert.match(capturedReport, /medium-find/);
+  assert.doesNotMatch(capturedReport, /low-find/);
+  assert.match(capturedReport, /Findings: 2 of 3 matched/);
+});
+
+test("/review gleam --report all includes all findings in severity order", async () => {
+  let capturedReport = "";
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => {
+      capturedReport = report;
+    },
+    runReviews: async () => ({
+      ok: true,
+      findings: [
+        sampleFinding("HIGH", "high-find"),
+        sampleFinding("MEDIUM", "medium-find"),
+        sampleFinding("LOW", "low-find"),
+      ],
+      totalResponseLength: 420,
+    }),
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.match(capturedReport, /high-find/);
+  assert.match(capturedReport, /medium-find/);
+  assert.match(capturedReport, /low-find/);
+  assert.match(capturedReport, /Findings: 3 of 3 matched/);
+  assert.ok(capturedReport.indexOf("high-find") < capturedReport.indexOf("medium-find"));
+  assert.ok(capturedReport.indexOf("medium-find") < capturedReport.indexOf("low-find"));
+});
+
+test("/review gleam --report all bypasses processFindingActions and queueFixFollowUp", async () => {
+  let processCalls = 0;
+  let queueCalls = 0;
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: () => { },
+    runReviews: async () => ({
+      ok: true,
+      findings: [sampleFinding("HIGH", "high-find")],
+      totalResponseLength: 420,
+    }),
+    processFindingActions: async () => {
+      processCalls += 1;
+      return {
+        queuedFixCount: 0,
+        queueFailures: 0,
+        stoppedAt: null,
+      };
+    },
+    queueFixFollowUp: async () => {
+      queueCalls += 1;
+      return { ok: true as const };
+    },
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.equal(processCalls, 0);
+  assert.equal(queueCalls, 0);
+});
+
+test("/review gleam --report high with only LOW findings reports zero matches", async () => {
+  let capturedReport = "";
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => {
+      capturedReport = report;
+    },
+    runReviews: async () => ({
+      ok: true,
+      findings: [sampleFinding("LOW", "minor-thing")],
+      totalResponseLength: 100,
+    }),
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report high", ctx);
+
+  assert.match(capturedReport, /Findings: 0 of 1 matched/);
+  assert.match(capturedReport, /No findings matched --report high\./);
+});
+
+test("/review gleam --report all with zero findings and large response writes parse-suspicion warning to stderr", async () => {
+  let capturedReport: string | undefined;
+  let capturedError: string | undefined;
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => {
+      capturedReport = report;
+    },
+    reportErrorWriter: (message) => {
+      capturedError = message;
+    },
+    runReviews: async () => ({
+      ok: true,
+      findings: [],
+      totalResponseLength: 500,
+    }),
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.equal(capturedReport, undefined);
+  assert.ok(capturedError);
+  assert.match(capturedError!, /no findings could be parsed/i);
+});
+
+test("/review gleam --report all in print mode writes fatal setup errors to stderr", async () => {
+  let capturedError: string | undefined;
+
+  const { review, ctx, notifications } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportErrorWriter: (message) => {
+      capturedError = message;
+    },
+  });
+  ctx.hasUI = false;
+  ctx.model = undefined;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.equal(notifications.length, 0);
+  assert.equal(capturedError, "No model selected");
+});
+
+test("/review gleam --report all in JSON mode rejects with error", async () => {
+  const { review, ctx, notifications } = setupReviewCommand({
+    detectOutputMode: () => "json",
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.ok(
+    notifications.some((n) =>
+      n.message.includes("--report requires print mode (-p). It cannot be used in JSON mode.")),
+    `Expected JSON mode rejection, got: ${JSON.stringify(notifications)}`,
+  );
+});
+
+test("buildFindingsReport produces deterministic markdown with heading, metadata, and findings", () => {
+  const report = buildFindingsReport(
+    [sampleFinding("HIGH", "auth-bypass"), sampleFinding("MEDIUM", "missing-guard")],
+    {
+      language: "gleam",
+      range: "@",
+      threshold: "medium",
+      totalFindings: 3,
+    },
+  );
+
+  assert.ok(report.startsWith("# Review report\n"));
+  assert.match(report, /Language: gleam/);
+  assert.match(report, /Range: @/);
+  assert.match(report, /Threshold: medium/);
+  assert.match(report, /Findings: 2 of 3 matched/);
+  assert.match(report, /## HIGH[\s\S]*### 1\. auth-bypass/);
+  assert.match(report, /File: src\/auth-bypass\.gleam/);
+  assert.match(report, /Skill: gleam-code-review/);
+  assert.match(report, /Issue:\nauth-bypass issue/);
+  assert.match(report, /Suggested fix:\nauth-bypass suggestion/);
+  assert.match(report, /## MEDIUM[\s\S]*### 2\. missing-guard/);
+  assert.match(report, /File: src\/missing-guard\.gleam/);
+  assert.match(report, /Issue:\nmissing-guard issue/);
+  assert.match(report, /Suggested fix:\nmissing-guard suggestion/);
+});
+
+test("detectReviewOutputMode classifies argv correctly", () => {
+  assert.equal(detectReviewOutputMode(["node", "pi", "-p"]), "print");
+  assert.equal(
+    detectReviewOutputMode(["/usr/local/bin/node", "/path/to/pi", "-p", "/review gleam"]),
+    "print",
+  );
+  assert.equal(detectReviewOutputMode(["node", "pi", "--print"]), "print");
+  assert.equal(detectReviewOutputMode(["node", "pi", "--mode", "json"]), "json");
+  assert.equal(detectReviewOutputMode(["node", "pi"]), "interactive");
+  assert.throws(() => detectReviewOutputMode(["node", "pi", "--mode", "json", "-p"]), /Cannot combine/);
+  assert.equal(detectReviewOutputMode([]), "interactive");
 });
 
 test("/review gleam --fix high notifies error and completes when queueFixFollowUp fails", async () => {
@@ -529,16 +870,27 @@ test("resolveReviewRequestAuth uses getApiKeyAndHeaders when available", async (
   });
 });
 
-// --- Finding 18: no-UI early return path ---
+test("resolveReviewRequestAuth tolerates undefined getApiKeyAndHeaders results", async () => {
+  const model = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+  };
 
-test("/review exits early when hasUI is false", async () => {
-  const { review, ctx, notifications } = setupReviewCommand();
-  ctx.hasUI = false;
-  await review.handler("gleam", ctx);
-  assert.ok(
-    notifications.some((n) => n.message.includes("interactive terminal")),
-    `Expected interactive terminal notification, got: ${JSON.stringify(notifications)}`,
+  const auth = await resolveReviewRequestAuth(
+    {
+      ...createTestCtx().ctx,
+      model,
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => undefined as never,
+        getApiKey: async () => "fallback-token",
+      },
+    },
+    model,
   );
+
+  assert.deepEqual(auth, {
+    apiKey: "fallback-token",
+  });
 });
 
 // --- Finding 19: parseReviewArgs empty-input handler path ---
@@ -568,4 +920,303 @@ test("/review gleam --fix high with only LOW findings skips all and does not que
     notifications.some((n) => n.message.includes("Skipped 1 finding")),
     `Expected skip notification, got: ${JSON.stringify(notifications)}`,
   );
+});
+
+// --- Finding 6: buildFindingsReport with empty findings array ---
+
+test("buildFindingsReport with empty findings produces no-match message", () => {
+  const report = buildFindingsReport([], {
+    language: "gleam",
+    range: "@",
+    threshold: "high",
+    totalFindings: 5,
+  });
+
+  assert.match(report, /Findings: 0 of 5 matched/);
+  assert.match(report, /No findings matched --report high\./);
+  assert.doesNotMatch(report, /## HIGH/);
+});
+
+// --- Finding 7: buildFindingsReport when finding.file is undefined ---
+
+test("buildFindingsReport omits File line when finding has no file", () => {
+  const finding: Finding = {
+    ...sampleFinding("HIGH", "no-file-finding"),
+    file: undefined,
+  };
+  const report = buildFindingsReport([finding], {
+    language: "gleam",
+    range: "@",
+    threshold: "all",
+    totalFindings: 1,
+  });
+
+  assert.match(report, /no-file-finding/);
+  assert.doesNotMatch(report, /File:/);
+  assert.match(report, /Skill: gleam-code-review/);
+});
+
+// --- Finding 8: --report all with zero findings and short response ---
+
+test("/review gleam --report all with zero findings and short response outputs clean empty report", async () => {
+  let capturedReport: string | undefined;
+  let capturedError: string | undefined;
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => { capturedReport = report; },
+    reportErrorWriter: (message) => { capturedError = message; },
+    runReviews: async () => ({
+      ok: true,
+      findings: [],
+      totalResponseLength: 50, // below MIN_RESPONSE_FOR_SUSPICION
+    }),
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.equal(capturedError, undefined);
+  assert.ok(capturedReport);
+  assert.match(capturedReport!, /No findings matched --report all/);
+});
+
+// --- Finding 9: --report error paths routing through reportErrorWriter for non-model errors ---
+
+test("/review gleam --report all writes range-diff errors to stderr", async () => {
+  let capturedError: string | undefined;
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportErrorWriter: (msg) => { capturedError = msg; },
+    gatherRangeDiff: async () => ({ error: "jj/git not found", diff: null }),
+  });
+  ctx.hasUI = false;
+  await review.handler("gleam --report all", ctx);
+  assert.ok(capturedError);
+  assert.match(capturedError!, /jj\/git not found/);
+});
+
+// --- Finding 3: executeReviewSkills abort/cancellation path ---
+
+test("executeReviewSkills returns cancelled when response is aborted", async () => {
+  const tmpSkillPath = "/tmp/test-review-skill-abort.md";
+  fs.writeFileSync(tmpSkillPath, "Review carefully.\n");
+  try {
+    const { ctx } = createTestCtx();
+    ctx.model = { provider: "test", id: "test-model", name: "Test" };
+    const skills: ReviewSkill[] = [
+      { name: "skill-1", language: "gleam", type: "code", path: tmpSkillPath },
+      { name: "skill-2", language: "gleam", type: "security", path: tmpSkillPath },
+    ];
+    const controller = new AbortController();
+    const complete = async (
+      _model: unknown,
+      _input: unknown,
+      _options: unknown,
+    ) => {
+      controller.abort();
+      return {
+        stopReason: "aborted" as const,
+        content: [] as Array<{ type: string; text?: string }>,
+      };
+    };
+    const result = await executeReviewSkills(ctx, skills, "diff content", complete, {
+      signal: controller.signal,
+    });
+    assert.equal(result.ok, false);
+    assert.equal((result as Extract<typeof result, { ok: false }>).cancelled, true);
+  } finally {
+    fs.unlinkSync(tmpSkillPath);
+  }
+});
+
+// --- Finding 4: headless runReviews error handling (via handler in print mode) ---
+
+test("/review gleam --report all suppresses cancelled-review info in print mode", async () => {
+  let capturedError: string | undefined;
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportErrorWriter: (msg) => { capturedError = msg; },
+    runReviews: async () => ({ ok: false as const, cancelled: true as const }),
+  });
+  ctx.hasUI = false;
+  await review.handler("gleam --report all", ctx);
+  assert.equal(capturedError, undefined, "cancelled review should not write to stderr in print mode");
+});
+
+// --- Finding 14: buildFindingsReport when finding.effort is undefined ---
+
+test("buildFindingsReport omits Effort line when finding has no effort", () => {
+  const finding: Finding = { ...sampleFinding("HIGH", "no-effort"), effort: undefined };
+  const report = buildFindingsReport([finding], {
+    language: "gleam",
+    range: "@",
+    threshold: "all",
+    totalFindings: 1,
+  });
+  assert.doesNotMatch(report, /Effort:/);
+});
+
+// --- Finding 15: onSkillStart callback in executeReviewSkills ---
+
+test("executeReviewSkills calls onSkillStart for each skill", async () => {
+  const tmpSkillPath = "/tmp/test-review-skill-callback.md";
+  fs.writeFileSync(tmpSkillPath, "Review carefully.\n");
+  try {
+    const { ctx } = createTestCtx();
+    ctx.model = { provider: "test", id: "test-model", name: "Test" };
+    const skills: ReviewSkill[] = [
+      { name: "skill-1", language: "gleam", type: "code", path: tmpSkillPath },
+      { name: "skill-2", language: "gleam", type: "security", path: tmpSkillPath },
+    ];
+    const calls: Array<{ name: string; index: number; total: number }> = [];
+    const complete = async (
+      _model: unknown,
+      _input: unknown,
+      _options: unknown,
+    ) => ({
+      content: [{ type: "text" as const, text: "No issues found." }] as Array<{
+        type: string;
+        text?: string;
+      }>,
+    });
+    const result = await executeReviewSkills(ctx, skills, "diff content", complete, {
+      onSkillStart: (skill, index, total) => {
+        calls.push({ name: skill.name, index, total });
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], { name: "skill-1", index: 0, total: 2 });
+    assert.deepEqual(calls[1], { name: "skill-2", index: 1, total: 2 });
+  } finally {
+    fs.unlinkSync(tmpSkillPath);
+  }
+});
+
+// --- Finding 16: detectReviewOutputMode edge cases ---
+
+test("detectReviewOutputMode handles --mode as last element without crashing", () => {
+  assert.equal(detectReviewOutputMode(["node", "pi", "--mode"]), "interactive");
+});
+
+test("detectReviewOutputMode throws when -p and --mode json both present (either order)", () => {
+  assert.throws(
+    () => detectReviewOutputMode(["node", "pi", "-p", "--mode", "json"]),
+    /Cannot combine/,
+  );
+  assert.throws(
+    () => detectReviewOutputMode(["node", "pi", "--mode", "json", "--print"]),
+    /Cannot combine/,
+  );
+});
+
+test("detectReviewOutputMode returns interactive for non-json --mode value", () => {
+  assert.equal(detectReviewOutputMode(["node", "pi", "--mode", "text"]), "interactive");
+});
+
+// --- Finding 17: resolveReviewRequestAuth with null result ---
+
+test("resolveReviewRequestAuth tolerates null getApiKeyAndHeaders result", async () => {
+  const model = { provider: "openai", id: "gpt-5" };
+  const auth = await resolveReviewRequestAuth(
+    {
+      ...createTestCtx().ctx,
+      model,
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => null as never,
+        getApiKey: async () => "fallback-key",
+      },
+    },
+    model,
+  );
+  assert.deepEqual(auth, { apiKey: "fallback-key" });
+});
+
+// --- Finding 18: writeReviewStdout helper behavior ---
+
+test("writeReviewStdout uses writeRawStdout when output-guard loader succeeds", async () => {
+  setOutputGuardModuleLoaderForTests(async () => ({
+    writeRawStdout(text: string) {
+      rawWrites.push(text);
+    },
+  }));
+
+  const rawWrites: string[] = [];
+
+  try {
+    await captureProcessWrites(async ({ stdout, stderr }) => {
+      await writeReviewStdout("report body\n");
+      assert.deepEqual(rawWrites, ["report body\n"]);
+      assert.deepEqual(stdout, []);
+      assert.deepEqual(stderr, []);
+    });
+  } finally {
+    resetReviewStdoutStateForTests();
+  }
+});
+
+test("writeReviewStdout clears failed loader cache and retries successfully", async () => {
+  let attempts = 0;
+  const rawWrites: string[] = [];
+
+  setOutputGuardModuleLoaderForTests(async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new Error("boom");
+    }
+    return {
+      writeRawStdout(text: string) {
+        rawWrites.push(text);
+      },
+    };
+  });
+
+  try {
+    await captureProcessWrites(async ({ stdout, stderr }) => {
+      await writeReviewStdout("first\n");
+      await writeReviewStdout("second\n");
+
+      assert.equal(attempts, 2);
+      assert.deepEqual(stdout, ["first\n"]);
+      assert.deepEqual(rawWrites, ["second\n"]);
+      assert.equal(stderr.length, 1);
+      assert.match(stderr[0]!, /Raw stdout unavailable/);
+      assert.match(stderr[0]!, /boom/);
+    });
+  } finally {
+    resetReviewStdoutStateForTests();
+  }
+});
+
+test("writeReviewStdout warns only once when output-guard module is invalid", async () => {
+  setOutputGuardModuleLoaderForTests(async () => ({}));
+
+  try {
+    await captureProcessWrites(async ({ stdout, stderr }) => {
+      await writeReviewStdout("one\n");
+      await writeReviewStdout("two\n");
+
+      assert.deepEqual(stdout, ["one\n", "two\n"]);
+      assert.equal(stderr.length, 1);
+      assert.match(stderr[0]!, /missing writeRawStdout export/);
+    });
+  } finally {
+    resetReviewStdoutStateForTests();
+  }
+});
+
+// --- Finding 19: --report combined with review failure ---
+
+test("/review gleam --report all writes review failure to stderr", async () => {
+  let capturedError: string | undefined;
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportErrorWriter: (msg) => { capturedError = msg; },
+    runReviews: async () => ({ ok: false as const, cancelled: false as const, error: "Model timeout" }),
+  });
+  ctx.hasUI = false;
+  await review.handler("gleam --report all", ctx);
+  assert.ok(capturedError);
+  assert.match(capturedError!, /Model timeout/);
 });
