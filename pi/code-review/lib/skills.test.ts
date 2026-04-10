@@ -85,6 +85,8 @@ test("getLanguageExtensions returns known extension lists and undefined for unkn
     ".mts",
     ".cts",
   ]);
+  assert.deepEqual(getLanguageExtensions("python"), [".py"]);
+  assert.deepEqual(getLanguageExtensions("go"), [".go"]);
   assert.deepEqual(getLanguageExtensions("gleam"), [".gleam"]);
   assert.equal(getLanguageExtensions("unknown-language"), undefined);
 });
@@ -188,6 +190,23 @@ test("filterDiffByExtensions keeps files matching any of several extensions", ()
   assert.match(filtered!, /src\/a\.ts/);
   assert.match(filtered!, /src\/b\.gleam/);
   assert.doesNotMatch(filtered!, /README\.md/);
+});
+
+
+test("filterDiffByExtensions supports python and go file sections", () => {
+  const diff = buildDiff("src/app.py", "cmd/server.go", "README.md");
+
+  const pythonOnly = filterDiffByExtensions(diff, [".py"]);
+  assert.ok(pythonOnly, "expected python result");
+  assert.match(pythonOnly!, /src\/app\.py/);
+  assert.doesNotMatch(pythonOnly!, /cmd\/server\.go/);
+  assert.doesNotMatch(pythonOnly!, /README\.md/);
+
+  const goOnly = filterDiffByExtensions(diff, [".go"]);
+  assert.ok(goOnly, "expected go result");
+  assert.match(goOnly!, /cmd\/server\.go/);
+  assert.doesNotMatch(goOnly!, /src\/app\.py/);
+  assert.doesNotMatch(goOnly!, /README\.md/);
 });
 
 test("discoverReviewSkills finds review skills in a temporary directory", () => {

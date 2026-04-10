@@ -88,6 +88,8 @@ export function filterSkills(
  */
 const LANGUAGE_EXTENSIONS: Record<string, string[]> = {
   typescript: [".ts", ".tsx", ".mts", ".cts"],
+  python: [".py"],
+  go: [".go"],
   fsharp: [".fs", ".fsx"],
   gleam: [".gleam"],
   elm: [".elm"],
