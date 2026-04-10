@@ -101,29 +101,21 @@ export async function runCommitPipeline(ctx: PipelineContext): Promise<PipelineR
 
   // 2. Optional absorb pre-pass
   if (!args.noAbsorb) {
-    // Guard: absorb rewrites ancestor commits, which causes divergent commits
-    // when other workspaces share those ancestors. Skip absorb if other
-    // workspaces exist.
-    let absorbSafe = true;
+    let absorbRevset: string | undefined;
+    let absorbAllowed = true;
+
     try {
-      const hasOthers = await jj.hasOtherWorkspaces();
-      if (hasOthers) {
-        absorbSafe = false;
-        warnings.push(
-          "Skipping jj absorb: other workspaces detected. " +
-          "Absorb rewrites ancestor commits which causes divergent commits across workspaces.",
-        );
-      }
+      const scopedRevset = await jj.getScopedAbsorbRevset();
+      absorbRevset = scopedRevset ?? undefined;
     } catch {
-      // If we can't check, proceed cautiously — skip absorb
-      absorbSafe = false;
-      warnings.push("Could not check for other workspaces; skipping absorb to be safe.");
+      absorbAllowed = false;
+      warnings.push("Could not determine workspace absorb targets; skipping absorb to be safe.");
     }
 
-    if (absorbSafe) {
+    if (absorbAllowed) {
       progress("Running jj absorb...");
       try {
-        const absorbResult = await jj.absorb();
+        const absorbResult = await jj.absorb(absorbRevset);
         if (absorbResult.changed) {
           progress(`Absorb applied: ${absorbResult.output}`);
           // Re-check changed files after absorb
