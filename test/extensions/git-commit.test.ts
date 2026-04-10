@@ -136,6 +136,59 @@ test("git-commit handler: auto-stages and restores staging on non-commit outcome
   );
 });
 
+test("git-commit handler: treats header-based model auth as available", async () => {
+  const registrations: Array<{ name: string; command: any }> = [];
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  class MockGit {
+    async hasStagedChanges() {
+      return true;
+    }
+    async getStagedSnapshot() {
+      return {
+        files: [{ path: "src/app.ts", kind: "modified", isBinary: false, patch: "", hunks: [], splitAllowed: false }],
+        stat: "",
+        diff: "",
+      };
+    }
+    async resetStaging() { }
+    async push() { }
+  }
+
+  const codexModel = { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" };
+
+  registerGitCommitCommand(pi, {
+    isGitRepo: () => true,
+    loadGitCommitConfig: () => ({}),
+    ControlledGit: MockGit as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      assert.equal(await pipelineCtx.hasApiKey(codexModel), true);
+      return {
+        committed: false,
+        summary: "No commit proposal could be generated. Check model configuration and try again.",
+        warnings: [],
+        messages: [],
+      };
+    },
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: {
+      getAll: () => [codexModel],
+      find: () => codexModel,
+      getApiKeyAndHeaders: async () => ({ ok: true as const, headers: { Authorization: "Bearer token" } }),
+      getApiKey: async () => "",
+    },
+    model: undefined,
+  });
+});
+
 test("git-commit handler: passes configured model into the pipeline", async () => {
   const registrations: Array<{ name: string; command: any }> = [];
   const pi = {
@@ -249,4 +302,111 @@ test("git-commit handler: pushes after successful commit when requested", async 
 
   assert.deepStrictEqual(calls, ["hasStagedChanges", "getStagedSnapshot", "push"]);
   assert.ok(notifications.some((entry) => entry.msg === "Pushed to remote." && entry.level === "info"));
+});
+
+test("git-commit handler: falls back to getApiKey when getApiKeyAndHeaders returns ok: false", async () => {
+  const registrations: Array<{ name: string; command: any }> = [];
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  class MockGit {
+    async hasStagedChanges() {
+      return true;
+    }
+    async getStagedSnapshot() {
+      return {
+        files: [{ path: "src/app.ts", kind: "modified", isBinary: false, patch: "", hunks: [], splitAllowed: false }],
+        stat: "",
+        diff: "",
+      };
+    }
+    async resetStaging() { }
+    async push() { }
+  }
+
+  const codexModel = { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" };
+
+  registerGitCommitCommand(pi, {
+    isGitRepo: () => true,
+    loadGitCommitConfig: () => ({}),
+    ControlledGit: MockGit as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      assert.equal(await pipelineCtx.hasApiKey(codexModel), true);
+      return {
+        committed: false,
+        summary: "No commit proposal could be generated. Check model configuration and try again.",
+        warnings: [],
+        messages: [],
+      };
+    },
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: {
+      getAll: () => [codexModel],
+      find: () => codexModel,
+      getApiKeyAndHeaders: async () => ({ ok: false as const, error: "expired" }),
+      getApiKey: async () => "valid-key",
+    },
+    model: undefined,
+  });
+});
+
+test("git-commit handler: hasApiKey returns false when getApiKeyAndHeaders returns ok: true with empty headers", async () => {
+  const registrations: Array<{ name: string; command: any }> = [];
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  class MockGit {
+    async hasStagedChanges() {
+      return true;
+    }
+    async getStagedSnapshot() {
+      return {
+        files: [{ path: "src/app.ts", kind: "modified", isBinary: false, patch: "", hunks: [], splitAllowed: false }],
+        stat: "",
+        diff: "",
+      };
+    }
+    async resetStaging() { }
+    async push() { }
+  }
+
+  const codexModel = { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" };
+
+  registerGitCommitCommand(pi, {
+    isGitRepo: () => true,
+    loadGitCommitConfig: () => ({}),
+    ControlledGit: MockGit as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      // ok: true with empty apiKey and empty headers — should return false (no valid credentials)
+      assert.equal(await pipelineCtx.hasApiKey(codexModel), false);
+      return {
+        committed: false,
+        summary: "No commit proposal could be generated. Check model configuration and try again.",
+        warnings: [],
+        messages: [],
+      };
+    },
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: {
+      getAll: () => [codexModel],
+      find: () => codexModel,
+      getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "", headers: {} }),
+      getApiKey: async () => "",
+    },
+    model: undefined,
+  });
 });

@@ -3,22 +3,41 @@
  *
  * Handles:
  * - Prompt construction for the commit analysis model
- * - Model completion via pi-ai's completeSimple API
+ * - Model completion via pi-ai's complete API
  * - Parsing and sanitizing model JSON responses into CommitProposal / SplitCommitPlan
  */
 
 import type { CommitProposal, CommitType, SplitCommitPlan } from "./types.ts";
 import type { ModelCandidate } from "./model-resolver.ts";
+import {
+  resolveModelObject,
+  resolveRequestAuth,
+  resolveApiKey,
+  buildCompleteOptions as buildCompleteOptionsBase,
+  extractFirstTextBlock,
+  isRecord,
+} from "../../../lib/commit/inference-common.ts";
+import type {
+  CompletionBlock,
+  CompleteOptions,
+  ModelRegistryForInference,
+  InferenceContext,
+} from "../../../lib/commit/inference-common.ts";
+
+export type { CompletionBlock, CompleteOptions, ModelRegistryForInference };
+
+export interface InferenceLogger {
+  debug?: (message: string, meta?: unknown) => void;
+}
+
+export type { InferenceContext };
 
 // ---------------------------------------------------------------------------
 // Completion function injection
 // ---------------------------------------------------------------------------
 
-export type CompletionBlock =
-  | { type: "text"; text?: string }
-  | { type: string;[key: string]: unknown };
-
 export type CompleteInput = {
+  systemPrompt?: string;
   messages: Array<{
     role: "user" | "assistant" | "system";
     content: Array<{ type: "text"; text: string }>;
@@ -26,17 +45,16 @@ export type CompleteInput = {
   }>;
 };
 
-export type CompleteOptions = {
-  apiKey?: string;
-  maxTokens?: number;
-  temperature?: number;
-};
-
 export type CompleteFn = (
   model: unknown,
   context: CompleteInput,
   options?: CompleteOptions,
-) => Promise<{ content: CompletionBlock[] }>;
+) => Promise<{
+  content?: CompletionBlock[];
+  output_text?: string;
+  output?: unknown[];
+  [key: string]: unknown;
+}>;
 
 export type CompleteFnImporter = () => Promise<CompleteFn>;
 
@@ -57,8 +75,8 @@ async function loadCompleteFn(): Promise<CompleteFn> {
   if (_completeFnImporter) {
     return _completeFnImporter();
   }
-  const { completeSimple } = await import("@mariozechner/pi-ai");
-  return completeSimple as CompleteFn;
+  const { complete } = await import("@mariozechner/pi-ai");
+  return complete as CompleteFn;
 }
 
 async function getCompleteFn(): Promise<CompleteFn> {
@@ -71,31 +89,16 @@ async function getCompleteFn(): Promise<CompleteFn> {
 // Model inference
 // ---------------------------------------------------------------------------
 
-export interface ModelRegistryForInference {
-  find: (provider: string, id: string) => unknown;
-  getAll?: () => unknown[];
-  getApiKey: (model: unknown) => Promise<string | null | undefined>;
-}
-
-export interface InferenceLogger {
-  debug?: (message: string, meta?: unknown) => void;
-}
-
-export interface InferenceContext {
-  modelRegistry?: ModelRegistryForInference;
-  logger?: InferenceLogger;
-  model?: {
-    provider?: string;
-    id?: string;
-    [key: string]: unknown;
-  };
-}
+const JJ_MAX_TOKENS = 2048;
 
 /**
  * Resolve the model object from the registry or session, call the completion
  * API, and return the first text block. Returns null if the model cannot be
  * found or the completion fails.
  */
+const COMMIT_INFERENCE_SYSTEM_PROMPT =
+  "You are a conventional commit expert. Follow the user's instructions exactly and respond only with the requested JSON.";
+
 export async function runModelInference(
   ctx: InferenceContext,
   model: ModelCandidate,
@@ -105,18 +108,15 @@ export async function runModelInference(
     const resolvedModel = resolveModelObject(ctx, model);
     if (!resolvedModel) return null;
 
-    const apiKey = await resolveApiKey(ctx, resolvedModel.fromRegistry);
+    const auth = await resolveRequestAuth(ctx, resolvedModel.fromRegistry);
 
     const complete = await getCompleteFn();
     const response = await complete(resolvedModel.value, {
+      systemPrompt: COMMIT_INFERENCE_SYSTEM_PROMPT,
       messages: [
         { role: "user", content: [{ type: "text", text: prompt }] },
       ],
-    }, {
-      apiKey,
-      maxTokens: 2048,
-      temperature: 0.2,
-    });
+    }, buildCompleteOptions(model, auth));
 
     return extractFirstTextBlock(response);
   } catch (err) {
@@ -130,76 +130,11 @@ export async function runModelInference(
   }
 }
 
-/** Result of resolving a model object from registry or session. */
-interface ResolvedModel {
-  /** The model object to pass to the completion function. */
-  value: unknown;
-  /** The registry model used for API key lookup, or null when from session. */
-  fromRegistry: unknown | null;
-}
-
-/**
- * Find the model object via: registry find → registry getAll → session model.
- * Returns the resolved object and whether it came from the registry.
- */
-function resolveModelObject(
-  ctx: InferenceContext,
+function buildCompleteOptions(
   model: ModelCandidate,
-): ResolvedModel | null {
-  let registryModel = ctx.modelRegistry?.find(model.provider, model.id);
-
-  if (!registryModel && ctx.modelRegistry?.getAll) {
-    const models = ctx.modelRegistry.getAll();
-    registryModel = models.find((m) => {
-      if (!isRecord(m)) return false;
-      return m.provider === model.provider && m.id === model.id;
-    });
-  }
-
-  if (registryModel) {
-    return { value: registryModel, fromRegistry: registryModel };
-  }
-
-  // Fall back to the active session model when registry lookup misses
-  // (e.g. OAuth-backed session adapters).
-  const sessionModel =
-    ctx.model
-      && ctx.model.provider === model.provider
-      && ctx.model.id === model.id
-      ? ctx.model
-      : undefined;
-
-  if (sessionModel) {
-    return { value: sessionModel, fromRegistry: null };
-  }
-
-  return null;
-}
-
-async function resolveApiKey(
-  ctx: InferenceContext,
-  registryModel: unknown,
-): Promise<string | undefined> {
-  if (!registryModel || !ctx.modelRegistry) return undefined;
-  try {
-    const key = await ctx.modelRegistry.getApiKey(registryModel);
-    if (typeof key === "string" && key.trim().length > 0) return key;
-  } catch {
-    // Swallow — caller proceeds without a key
-  }
-  return undefined;
-}
-
-function extractFirstTextBlock(
-  response: { content: CompletionBlock[] } | null | undefined,
-): string | null {
-  if (!Array.isArray(response?.content)) return null;
-  for (const block of response.content) {
-    if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-      return block.text;
-    }
-  }
-  return null;
+  auth: { apiKey?: string; headers?: Record<string, string> },
+): CompleteOptions {
+  return buildCompleteOptionsBase(model, auth, JJ_MAX_TOKENS);
 }
 
 // ---------------------------------------------------------------------------
@@ -411,10 +346,6 @@ const VALID_COMMIT_TYPES = new Set([
   "test", "build", "ci", "chore", "style", "revert",
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 function sanitizeType(value: unknown): CommitType {
   if (typeof value === "string" && VALID_COMMIT_TYPES.has(value)) {
     return value as CommitType;
@@ -542,6 +473,8 @@ export const _testHelpers = {
   parseJsonFromModelResponse,
   resolveModelObject,
   resolveApiKey,
+  resolveRequestAuth,
+  buildCompleteOptions,
   sanitizeSummary,
   sanitizeDetails,
   validateSplitCoverage,

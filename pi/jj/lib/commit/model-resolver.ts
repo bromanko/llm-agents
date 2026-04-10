@@ -34,7 +34,8 @@ const PREFERRED_MODEL_PATTERN = /^claude-sonnet-4-6/;
 const PREFERRED_PROVIDER = "anthropic";
 
 const INCOMPATIBLE_PROVIDERS = new Set([
-  "openai-codex",
+  // openai-codex works via pi-ai's complete() path, so allow it for jj-commit.
+  // Keep opencode excluded until jj-commit has a proven-compatible inference path.
   "opencode",
 ]);
 

@@ -3,12 +3,7 @@
  * Preferred order:
  *   1. Configured model from git-commit settings
  *   2. Built-in preferred model: Sonnet 4.6
- *   3. Current session model (if compatible with completeSimple)
- *
- * Providers that use non-standard completion APIs (e.g. openai-codex uses the
- * Codex Responses API with JWT auth and a different request/response shape)
- * are excluded because completeSimple returns empty/undefined responses for
- * them.
+ *   3. Current session model
  */
 
 export interface ModelCandidate {
@@ -33,11 +28,10 @@ const PREFERRED_MODEL_PATTERN = /^claude-sonnet-4-6/;
 const PREFERRED_PROVIDER = "anthropic";
 
 /**
- * Providers whose completeSimple path does not return usable text responses
- * for one-shot prompts. These are skipped during model selection.
+ * Providers known to need a different inference path than git-commit currently
+ * supports. openai-codex is now supported via pi-ai's complete() path.
  */
 const INCOMPATIBLE_PROVIDERS = new Set([
-  "openai-codex",
   "opencode",
 ]);
 

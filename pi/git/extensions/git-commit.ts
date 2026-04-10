@@ -23,6 +23,7 @@ import {
   runModelInference as runModelInferenceBase,
   runModelInferenceDetailed as runModelInferenceDetailedBase,
 } from "../lib/commit/inference.ts";
+import { hasModelAuth } from "../../lib/commit/inference-common.ts";
 
 export {
   buildCommitPrompt,
@@ -196,8 +197,7 @@ export function createGitCommitHandler(
         const found = registryModelByKey.get(key) ?? ctx.modelRegistry.find(model.provider, model.id);
         if (!found) return false;
         try {
-          const apiKey = await ctx.modelRegistry.getApiKey(found);
-          return apiKey !== undefined && apiKey !== null && apiKey !== "";
+          return await hasModelAuth(ctx.modelRegistry, found);
         } catch {
           return false;
         }

@@ -351,6 +351,7 @@ test("runModelInference: passes resolved model, prompt message, and options", as
   assert.equal(capturedContext.messages[0].timestamp, undefined);
   assert.deepStrictEqual(capturedOptions, {
     apiKey: "forwarded-key",
+    headers: undefined,
     maxTokens: 2048,
     temperature: 0.2,
   });
@@ -401,6 +402,7 @@ test("runModelInference: resolves completion via importer fallback when injector
   assert.deepStrictEqual(capturedContext.messages[0].content, [{ type: "text", text: prompt }]);
   assert.deepStrictEqual(capturedOptions, {
     apiKey: "fallback-key",
+    headers: undefined,
     maxTokens: 2048,
     temperature: 0.2,
   });
@@ -421,6 +423,17 @@ test("runModelInference: returns null for non-text or surprising content shapes"
 
   assert.equal(await runModelInference(nonText, model as any, "prompt"), null);
   assert.equal(await runModelInference(weirdShape, model as any, "prompt"), null);
+});
+
+test("runModelInference: extracts text from output_text-only responses", async () => {
+  const ctx = makeInferenceContext({
+    response: {
+      output_text: "codex response text",
+    },
+  });
+
+  const result = await runModelInference(ctx, model as any, "prompt");
+  assert.equal(result, "codex response text");
 });
 
 test("runModelInference: returns null when model not found in registry", async () => {
@@ -491,6 +504,7 @@ test("runModelInference: falls back to active session model when registry lookup
   assert.equal(capturedModel, activeModel);
   assert.deepStrictEqual(capturedOptions, {
     apiKey: undefined,
+    headers: undefined,
     maxTokens: 2048,
     temperature: 0.2,
   });
@@ -528,6 +542,7 @@ test("runModelInference: allows undefined apiKey and still completes", async () 
   assert.equal(completeCalled, true);
   assert.deepStrictEqual(capturedOptions, {
     apiKey: undefined,
+    headers: undefined,
     maxTokens: 2048,
     temperature: 0.2,
   });
@@ -562,6 +577,7 @@ test("runModelInference: normalizes blank apiKey to undefined", async () => {
   assert.equal(result, "oauth with blank key");
   assert.deepStrictEqual(capturedOptions, {
     apiKey: undefined,
+    headers: undefined,
     maxTokens: 2048,
     temperature: 0.2,
   });

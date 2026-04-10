@@ -18,6 +18,8 @@ const {
   extractFirstTextBlock,
   parseJsonFromModelResponse,
   resolveApiKey,
+  resolveRequestAuth,
+  buildCompleteOptions,
   sanitizeSummary,
   sanitizeDetails,
   validateSplitCoverage,
@@ -163,6 +165,27 @@ test("extractFirstTextBlock: returns null for non-array content", () => {
   assert.equal(extractFirstTextBlock(response), null);
 });
 
+test("extractFirstTextBlock: returns output_text when present", () => {
+  const response = { output_text: "codex text" } as any;
+  assert.equal(extractFirstTextBlock(response), "codex text");
+});
+
+test("extractFirstTextBlock: returns text from OpenAI Responses output messages", () => {
+  const response = {
+    output: [
+      { type: "reasoning", summary: [] },
+      {
+        type: "message",
+        content: [
+          { type: "output_text", text: "codex output message" },
+        ],
+      },
+    ],
+  } as any;
+
+  assert.equal(extractFirstTextBlock(response), "codex output message");
+});
+
 // ---------------------------------------------------------------------------
 // parseJsonFromModelResponse
 // ---------------------------------------------------------------------------
@@ -240,6 +263,127 @@ test("resolveApiKey: returns undefined for whitespace-only key", async () => {
   });
   const result = await resolveApiKey(ctx, { provider: "test", id: "test" });
   assert.equal(result, undefined);
+});
+
+test("resolveRequestAuth: prefers getApiKeyAndHeaders when available", async () => {
+  const ctx = createCtx({
+    modelRegistry: {
+      find: () => ({ provider: "test", id: "test" }),
+      getApiKey: async () => {
+        throw new Error("should not fall back to getApiKey");
+      },
+      getApiKeyAndHeaders: async () => ({
+        ok: true as const,
+        apiKey: "codex-key",
+        headers: { Authorization: "Bearer codex-key" },
+      }),
+    },
+  });
+
+  const result = await resolveRequestAuth(ctx, { provider: "test", id: "test" });
+
+  assert.deepStrictEqual(result, {
+    apiKey: "codex-key",
+    headers: { Authorization: "Bearer codex-key" },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveRequestAuth: fallback when getApiKeyAndHeaders returns ok: false
+// ---------------------------------------------------------------------------
+
+test("resolveRequestAuth: falls back to getApiKey when getApiKeyAndHeaders returns ok: false", async () => {
+  const auth = await resolveRequestAuth(
+    {
+      modelRegistry: {
+        find: () => ({ provider: "test", id: "test" }),
+        getApiKey: async () => "fallback-key",
+        getApiKeyAndHeaders: async () => ({ ok: false as const, error: "token expired" }),
+      },
+    },
+    { provider: "test", id: "test" },
+  );
+  assert.deepStrictEqual(auth, { apiKey: "fallback-key" });
+});
+
+// ---------------------------------------------------------------------------
+// resolveRequestAuth: returns empty auth when getApiKeyAndHeaders throws
+// ---------------------------------------------------------------------------
+
+test("resolveRequestAuth: returns empty auth when getApiKeyAndHeaders throws", async () => {
+  const auth = await resolveRequestAuth(
+    {
+      modelRegistry: {
+        find: () => ({ provider: "test", id: "test" }),
+        getApiKey: async () => { throw new Error("also broken"); },
+        getApiKeyAndHeaders: async () => { throw new Error("network error"); },
+      },
+    },
+    { provider: "test", id: "test" },
+  );
+  assert.deepStrictEqual(auth, {});
+});
+
+// ---------------------------------------------------------------------------
+// resolveRequestAuth: returns empty auth when registryModel is null
+// ---------------------------------------------------------------------------
+
+test("resolveRequestAuth: returns empty auth when registryModel is null", async () => {
+  const auth = await resolveRequestAuth(
+    { modelRegistry: { find: () => null, getApiKey: async () => "key" } },
+    null,
+  );
+  assert.deepStrictEqual(auth, {});
+});
+
+// ---------------------------------------------------------------------------
+// resolveRequestAuth: falls back to getApiKey when getApiKeyAndHeaders is absent
+// ---------------------------------------------------------------------------
+
+test("resolveRequestAuth: falls back to getApiKey when getApiKeyAndHeaders is not defined", async () => {
+  const auth = await resolveRequestAuth(
+    {
+      modelRegistry: {
+        find: () => ({ provider: "test", id: "test" }),
+        getApiKey: async () => "legacy-key",
+      },
+    },
+    { provider: "test", id: "test" },
+  );
+  assert.deepStrictEqual(auth, { apiKey: "legacy-key" });
+});
+
+// ---------------------------------------------------------------------------
+// extractFirstTextBlock: edge cases
+// ---------------------------------------------------------------------------
+
+test("extractFirstTextBlock: returns null for empty output_text", () => {
+  assert.equal(extractFirstTextBlock({ output_text: "" } as any), null);
+});
+
+test("extractFirstTextBlock: prefers output_text over content blocks", () => {
+  const response = {
+    output_text: "from output_text",
+    content: [{ type: "text", text: "from content" }],
+  } as any;
+  assert.equal(extractFirstTextBlock(response), "from output_text");
+});
+
+// ---------------------------------------------------------------------------
+// buildCompleteOptions: includes temperature for non-codex providers
+// ---------------------------------------------------------------------------
+
+test("buildCompleteOptions: includes temperature for non-codex providers", () => {
+  const options = buildCompleteOptions(
+    { provider: "anthropic", id: "claude-sonnet", name: "Sonnet" },
+    { apiKey: "key-123" },
+  );
+  assert.deepStrictEqual(options, {
+    apiKey: "key-123",
+    headers: undefined,
+    maxTokens: 2048,
+    temperature: 0.2,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -393,6 +537,43 @@ test("runModelInference: proceeds without API key when getApiKey throws", async 
     const result = await runModelInference(ctx, defaultModel, "test prompt");
     assert.equal(result, responseText);
     assert.equal(capturedOptions?.apiKey, undefined);
+    assert.equal(capturedOptions?.headers, undefined);
+  } finally {
+    setCompleteFn(undefined);
+  }
+});
+
+test("runModelInference: forwards auth headers for providers like openai-codex", async () => {
+  let capturedOptions: any;
+  setCompleteFn(async (_model, _input, options) => {
+    capturedOptions = options;
+    return { output_text: '{"type":"single"}' };
+  });
+
+  try {
+    const ctx = createCtx({
+      modelRegistry: {
+        find: () => ({ provider: "openai-codex", id: "gpt-5.4" }),
+        getApiKey: async () => "",
+        getApiKeyAndHeaders: async () => ({
+          ok: true as const,
+          headers: { Authorization: "Bearer jwt-token" },
+        }),
+      },
+    });
+
+    const result = await runModelInference(
+      ctx,
+      { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" },
+      "test prompt",
+    );
+
+    assert.equal(result, '{"type":"single"}');
+    assert.deepStrictEqual(capturedOptions, {
+      apiKey: undefined,
+      headers: { Authorization: "Bearer jwt-token" },
+      maxTokens: 2048,
+    });
   } finally {
     setCompleteFn(undefined);
   }
@@ -420,6 +601,19 @@ test("runModelInference: sanitizes error in debug log (no raw err object)", asyn
 // ---------------------------------------------------------------------------
 // sanitizeSummary
 // ---------------------------------------------------------------------------
+
+test("buildCompleteOptions: omits temperature for openai-codex", () => {
+  const options = buildCompleteOptions(
+    { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" },
+    { apiKey: undefined, headers: { Authorization: "Bearer token" } },
+  );
+
+  assert.deepStrictEqual(options, {
+    apiKey: undefined,
+    headers: { Authorization: "Bearer token" },
+    maxTokens: 2048,
+  });
+});
 
 test("sanitizeSummary: returns default for non-string", () => {
   assert.equal(sanitizeSummary(42), "updated files");
@@ -558,6 +752,30 @@ test("parseModelResponse: returns empty for garbage input", () => {
 // Integration: full runModelInference → parseModelResponse path (Finding 13)
 // Verifies the wiring works end-to-end without a `pi` parameter.
 // ---------------------------------------------------------------------------
+
+test("runModelInference: includes a system prompt for providers that require instructions", async () => {
+  let capturedInput: any;
+  setCompleteFn(async (_model, input) => {
+    capturedInput = input;
+    return { content: [{ type: "text", text: '{"type":"single"}' }] };
+  });
+
+  try {
+    const ctx: InferenceContext = {
+      modelRegistry: {
+        find: (provider: string, id: string) => ({ provider, id, name: "test" }),
+        getApiKey: async () => "test-key",
+      },
+      logger: { debug: () => { } },
+    };
+
+    await runModelInference(ctx, defaultModel, "Analyze these changes");
+    assert.equal(typeof capturedInput?.systemPrompt, "string");
+    assert.ok(capturedInput.systemPrompt.includes("conventional commit expert"));
+  } finally {
+    setCompleteFn(undefined);
+  }
+});
 
 test("integration: runModelInference end-to-end produces parseable proposal", async () => {
   const modelResponse = JSON.stringify({

@@ -96,7 +96,7 @@ test("runCommitPipeline: retries with the session model when the primary model y
   );
 });
 
-test("runCommitPipeline: skips incompatible session model during retry", async () => {
+test("runCommitPipeline: retries with an openai-codex session model when the primary model yields no plan", async () => {
   const attemptedModels: string[] = [];
 
   const result = await runCommitPipeline({
@@ -112,16 +112,29 @@ test("runCommitPipeline: skips incompatible session model during retry", async (
     hasApiKey: async () => true,
     runAgenticSession: async ({ model }) => {
       attemptedModels.push(`${model.provider}/${model.id}`);
-      return { debugPath: "/tmp/primary-debug.txt" };
+      if (model.provider === "anthropic") {
+        return { debugPath: "/tmp/primary-debug.txt" };
+      }
+      return {
+        proposal: {
+          type: "fix",
+          scope: "git",
+          summary: "fixed codex retry handling",
+          details: [],
+          issueRefs: [],
+          warnings: [],
+        },
+      };
     },
   });
 
-  // Should only attempt the primary (anthropic), not retry with openai-codex
   assert.deepStrictEqual(attemptedModels, [
     "anthropic/claude-sonnet-4-6-test",
+    "openai-codex/gpt-5.4",
   ]);
   assert.equal(result.committed, false);
-  assert.ok(result.summary.includes("No commit proposal"));
+  assert.ok(result.summary.includes("Generated commit message"));
+  assert.ok(result.warnings.some((warning) => warning.includes("retrying with session model openai-codex/gpt-5.4")));
 });
 
 test("runCommitPipeline: reports config guidance when no model is available", async () => {

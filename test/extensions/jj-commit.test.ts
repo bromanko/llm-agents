@@ -302,6 +302,55 @@ test("jj-commit handler: OAuth session model is considered available without an 
   assert.deepStrictEqual(resolvedModel, sessionModel);
 });
 
+test("jj-commit handler: treats header-based model auth as available", async () => {
+  const registrations: Array<{ name: string; command: any }> = [];
+
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  const codexModel = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+  };
+
+  registerJjCommitCommand(pi, {
+    isJjRepo: () => true,
+    loadJjCommitConfig: () => ({}),
+    ControlledJj: class {
+      constructor(_cwd: string) { }
+    } as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      assert.equal(await pipelineCtx.hasApiKey(codexModel), true);
+      return {
+        committed: false,
+        summary: "Nothing to commit.",
+        warnings: [],
+        messages: [],
+      };
+    },
+    pushWithBookmark: async () => ({ success: true }),
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: {
+      getAll: () => [codexModel],
+      find: () => codexModel,
+      getApiKeyAndHeaders: async () => ({
+        ok: true as const,
+        headers: { Authorization: "Bearer jwt-token" },
+      }),
+      getApiKey: async () => "",
+    },
+    model: undefined,
+  });
+});
+
 test("jj-commit handler: passes configured model into the pipeline", async () => {
   const registrations: Array<{ name: string; command: any }> = [];
 
@@ -385,4 +434,97 @@ test("jj-commit handler: does not show recovery guidance for no-op outcomes", as
       (n) => n.msg !== "To inspect operations: jj op log\nTo undo last operation: jj op undo",
     ),
   );
+});
+
+test("jj-commit handler: falls back to getApiKey when getApiKeyAndHeaders returns ok: false", async () => {
+  const registrations: Array<{ name: string; command: any }> = [];
+
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  const codexModel = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+  };
+
+  registerJjCommitCommand(pi, {
+    isJjRepo: () => true,
+    loadJjCommitConfig: () => ({}),
+    ControlledJj: class {
+      constructor(_cwd: string) { }
+    } as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      assert.equal(await pipelineCtx.hasApiKey(codexModel), true);
+      return {
+        committed: false,
+        summary: "Nothing to commit.",
+        warnings: [],
+        messages: [],
+      };
+    },
+    pushWithBookmark: async () => ({ success: true }),
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: {
+      getAll: () => [codexModel],
+      find: () => codexModel,
+      getApiKeyAndHeaders: async () => ({ ok: false as const, error: "expired" }),
+      getApiKey: async () => "valid-key",
+    },
+    model: undefined,
+  });
+});
+
+test("jj-commit handler: hasApiKey returns false when getApiKeyAndHeaders returns ok: true with empty headers", async () => {
+  const registrations: Array<{ name: string; command: any }> = [];
+
+  const pi = {
+    registerCommand: (name: string, command: any) => {
+      registrations.push({ name, command });
+    },
+  } as any;
+
+  const codexModel = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+  };
+
+  registerJjCommitCommand(pi, {
+    isJjRepo: () => true,
+    loadJjCommitConfig: () => ({}),
+    ControlledJj: class {
+      constructor(_cwd: string) { }
+    } as any,
+    runCommitPipeline: async (pipelineCtx: any) => {
+      // ok: true with empty apiKey and empty headers — should return false (no valid credentials)
+      assert.equal(await pipelineCtx.hasApiKey(codexModel), false);
+      return {
+        committed: false,
+        summary: "Nothing to commit.",
+        warnings: [],
+        messages: [],
+      };
+    },
+    pushWithBookmark: async () => ({ success: true }),
+  });
+
+  await registrations[0].command.handler("", {
+    cwd: "/tmp/repo",
+    ui: { notify: () => { } },
+    modelRegistry: {
+      getAll: () => [codexModel],
+      find: () => codexModel,
+      getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "", headers: {} }),
+      getApiKey: async () => "",
+    },
+    model: undefined,
+  });
 });

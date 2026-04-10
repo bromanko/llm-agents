@@ -32,6 +32,7 @@ import {
   parseModelResponse,
   runModelInference as runModelInferenceBase,
 } from "../lib/commit/inference.ts";
+import { hasModelAuth } from "../../lib/commit/inference-common.ts";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -204,8 +205,7 @@ export function createJjCommitHandler(
           ctx.modelRegistry.find(model.provider, model.id);
         if (!found) return false;
         try {
-          const apiKey = await ctx.modelRegistry.getApiKey(found);
-          return apiKey !== undefined && apiKey !== null && apiKey !== "";
+          return await hasModelAuth(ctx.modelRegistry, found);
         } catch {
           return false;
         }

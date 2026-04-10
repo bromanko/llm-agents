@@ -1,11 +1,24 @@
 import type { CommitSnapshot, CommitProposal, CommitType, HunkSelector, SplitCommitPlan } from "./types.ts";
 import type { ModelCandidate } from "./model-resolver.ts";
+import {
+  resolveModelObject,
+  resolveRequestAuth,
+  resolveApiKey,
+  buildCompleteOptions as buildCompleteOptionsBase,
+  extractFirstTextBlock,
+  isRecord,
+} from "../../../lib/commit/inference-common.ts";
+import type {
+  CompletionBlock,
+  CompleteOptions,
+  ModelRegistryForInference,
+  InferenceContext,
+} from "../../../lib/commit/inference-common.ts";
 
-export type CompletionBlock =
-  | { type: "text"; text?: string }
-  | { type: string;[key: string]: unknown };
+export type { CompletionBlock, CompleteOptions, ModelRegistryForInference, InferenceContext };
 
 export type CompleteInput = {
+  systemPrompt?: string;
   messages: Array<{
     role: "user" | "assistant" | "system";
     content: Array<{ type: "text"; text: string }>;
@@ -13,17 +26,16 @@ export type CompleteInput = {
   }>;
 };
 
-export type CompleteOptions = {
-  apiKey?: string;
-  maxTokens?: number;
-  temperature?: number;
-};
-
 export type CompleteFn = (
   model: unknown,
   context: CompleteInput,
   options?: CompleteOptions,
-) => Promise<{ content: CompletionBlock[] }>;
+) => Promise<{
+  content?: CompletionBlock[];
+  output_text?: string;
+  output?: unknown[];
+  [key: string]: unknown;
+}>;
 
 export type CompleteFnImporter = () => Promise<CompleteFn>;
 
@@ -40,8 +52,8 @@ export function setCompleteFnImporter(importer: CompleteFnImporter | undefined):
 
 async function loadCompleteFn(): Promise<CompleteFn> {
   if (_completeFnImporter) return _completeFnImporter();
-  const { completeSimple } = await import("@mariozechner/pi-ai");
-  return completeSimple as CompleteFn;
+  const { complete } = await import("@mariozechner/pi-ai");
+  return complete as CompleteFn;
 }
 
 async function getCompleteFn(): Promise<CompleteFn> {
@@ -50,23 +62,21 @@ async function getCompleteFn(): Promise<CompleteFn> {
   return _completeFn;
 }
 
-export interface ModelRegistryForInference {
-  find: (provider: string, id: string) => unknown;
-  getAll?: () => unknown[];
-  getApiKey: (model: unknown) => Promise<string | null | undefined>;
-}
-
-export interface InferenceContext {
-  modelRegistry?: ModelRegistryForInference;
-  logger?: { debug?: (message: string, meta?: unknown) => void };
-  model?: { provider?: string; id?: string;[key: string]: unknown };
-}
-
 export interface ModelInferenceResult {
   text: string | null;
-  rawResponse?: { content: CompletionBlock[] } | null;
+  rawResponse?: {
+    content?: CompletionBlock[];
+    output_text?: string;
+    output?: unknown[];
+    [key: string]: unknown;
+  } | null;
   error?: string;
 }
+
+const GIT_MAX_TOKENS = 4096;
+
+const COMMIT_INFERENCE_SYSTEM_PROMPT =
+  "You are an expert at planning atomic Git commits. Follow the user's instructions exactly and respond only with the requested JSON.";
 
 export async function runModelInferenceDetailed(
   ctx: InferenceContext,
@@ -79,18 +89,15 @@ export async function runModelInferenceDetailed(
       return { text: null, error: "Model could not be resolved from registry or active session." };
     }
 
-    const apiKey = await resolveApiKey(ctx, resolvedModel.fromRegistry);
+    const auth = await resolveRequestAuth(ctx, resolvedModel.fromRegistry);
     const complete = await getCompleteFn();
     const response = await complete(
       resolvedModel.value,
       {
+        systemPrompt: COMMIT_INFERENCE_SYSTEM_PROMPT,
         messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
       },
-      {
-        apiKey,
-        maxTokens: 4096,
-        temperature: 0.2,
-      },
+      buildCompleteOptions(model, auth),
     );
 
     const text = extractFirstTextBlock(response);
@@ -100,7 +107,11 @@ export async function runModelInferenceDetailed(
         modelId: model.id,
         blockTypes: Array.isArray(response?.content)
           ? response.content.map((block) => String(block?.type ?? "unknown"))
-          : [],
+          : Array.isArray(response?.output)
+            ? response.output.map((block) =>
+              isRecord(block) && typeof block.type === "string" ? block.type : "unknown"
+            )
+            : [],
       });
     }
 
@@ -125,64 +136,11 @@ export async function runModelInference(
   return result.text;
 }
 
-interface ResolvedModel {
-  value: unknown;
-  fromRegistry: unknown | null;
-}
-
-function resolveModelObject(
-  ctx: InferenceContext,
+function buildCompleteOptions(
   model: ModelCandidate,
-): ResolvedModel | null {
-  let registryModel = ctx.modelRegistry?.find(model.provider, model.id);
-
-  if (!registryModel && ctx.modelRegistry?.getAll) {
-    registryModel = ctx.modelRegistry.getAll().find((entry) => {
-      if (!isRecord(entry)) return false;
-      return entry.provider === model.provider && entry.id === model.id;
-    });
-  }
-
-  if (registryModel) {
-    return { value: registryModel, fromRegistry: registryModel };
-  }
-
-  const sessionModel =
-    ctx.model && ctx.model.provider === model.provider && ctx.model.id === model.id
-      ? ctx.model
-      : undefined;
-
-  if (sessionModel) {
-    return { value: sessionModel, fromRegistry: null };
-  }
-
-  return null;
-}
-
-async function resolveApiKey(
-  ctx: InferenceContext,
-  registryModel: unknown,
-): Promise<string | undefined> {
-  if (!registryModel || !ctx.modelRegistry) return undefined;
-  try {
-    const key = await ctx.modelRegistry.getApiKey(registryModel);
-    if (typeof key === "string" && key.trim()) return key;
-  } catch {
-    // ignore
-  }
-  return undefined;
-}
-
-function extractFirstTextBlock(
-  response: { content: CompletionBlock[] } | null | undefined,
-): string | null {
-  if (!Array.isArray(response?.content)) return null;
-  for (const block of response.content) {
-    if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-      return block.text;
-    }
-  }
-  return null;
+  auth: { apiKey?: string; headers?: Record<string, string> },
+): CompleteOptions {
+  return buildCompleteOptionsBase(model, auth, GIT_MAX_TOKENS);
 }
 
 const MAX_PROMPT_DIFF_CHARS = 15_000;
@@ -367,10 +325,6 @@ const VALID_COMMIT_TYPES = new Set([
   "feat", "fix", "refactor", "perf", "docs", "test", "build", "ci", "chore", "style", "revert",
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 function sanitizeType(value: unknown): CommitType {
   return typeof value === "string" && VALID_COMMIT_TYPES.has(value)
     ? (value as CommitType)
@@ -462,5 +416,9 @@ export const _testHelpers = {
   buildCommitPrompt,
   parseModelResponse,
   resolveModelObject,
+  resolveApiKey,
+  resolveRequestAuth,
+  buildCompleteOptions,
+  extractFirstTextBlock,
   sanitizeChanges,
 };

@@ -101,22 +101,39 @@ test("resolveCommitModel: returns null when no models available and no session m
   assert.ok(result.warnings.some((w) => w.includes("No session model")));
 });
 
-test("resolveCommitModel: skips incompatible configured model and falls back to session model", async () => {
+test("resolveCommitModel: allows configured openai-codex models when auth is available", async () => {
+  const codexModel: ModelCandidate = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "openai-codex/gpt-5.4",
+  };
+
   const result = await resolveCommitModel({
-    availableModels: [sonnet46, sessionModel],
-    configuredModel: {
-      provider: "openai-codex",
-      id: "gpt-5.4",
-      name: "openai-codex/gpt-5.4",
-    },
+    availableModels: [sonnet46, sessionModel, codexModel],
+    configuredModel: codexModel,
     sessionModel,
-    hasApiKey: async (m) => m.id === sessionModel.id,
+    hasApiKey: async (m) => m.id === codexModel.id,
   });
 
-  assert.deepStrictEqual(result.model, sessionModel);
-  assert.ok(
-    result.warnings.some((w) => w.includes("Configured model openai-codex/gpt-5.4 uses an incompatible provider")),
-  );
+  assert.deepStrictEqual(result.model, codexModel);
+  assert.equal(result.warnings.length, 0);
+});
+
+test("resolveCommitModel: falls back to an openai-codex session model when preferred model is unavailable", async () => {
+  const codexSessionModel: ModelCandidate = {
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+  };
+
+  const result = await resolveCommitModel({
+    availableModels: [otherModel, codexSessionModel],
+    sessionModel: codexSessionModel,
+    hasApiKey: async (m) => m.id === codexSessionModel.id,
+  });
+
+  assert.deepStrictEqual(result.model, codexSessionModel);
+  assert.ok(result.warnings.some((w) => w.includes("not found in registry")));
 });
 
 test("resolveCommitModel: matches any Sonnet 4.6 variant ID", async () => {

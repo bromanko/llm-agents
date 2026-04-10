@@ -36,22 +36,21 @@ test("resolveCommitModel: does not pick a random compatible model when preferred
   );
 });
 
-test("resolveCommitModel: skips incompatible configured model and falls back to session model", async () => {
+test("resolveCommitModel: allows configured openai-codex model when auth is available", async () => {
   const result = await resolveCommitModel({
     availableModels: [
       { provider: "anthropic", id: "claude-sonnet-4-6-test", name: "Claude Sonnet 4.6" },
+      { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" },
     ],
     configuredModel: { provider: "openai-codex", id: "gpt-5.4", name: "openai-codex/gpt-5.4" },
     sessionModel: { provider: "anthropic", id: "claude-opus-4-1", name: "Claude Opus 4.1" },
-    hasApiKey: async (model) => model.id === "claude-opus-4-1",
+    hasApiKey: async (model) => model.id === "gpt-5.4",
   });
 
   assert.deepStrictEqual(result.model, {
-    provider: "anthropic",
-    id: "claude-opus-4-1",
-    name: "Claude Opus 4.1",
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "openai-codex/gpt-5.4",
   });
-  assert.ok(
-    result.warnings.some((warning) => warning.includes("Configured model openai-codex/gpt-5.4 uses an incompatible provider")),
-  );
+  assert.equal(result.warnings.length, 0);
 });
