@@ -154,18 +154,19 @@ Elm-specific code review skills for quality, security, performance, and testing.
 
 ## Pi `/review` command
 
-The repository includes an interactive code review command in `packages/code-review/extensions/index.ts`.
+The repository includes an interactive code review command in `pi/code-review/extensions/index.ts`.
 
 ### Usage
 
 ```shell
-/review <language> [types...] [-r|--revisions <range>] [--fix <high|medium|low|all>]
+/review <language> [types...] [-r|--revisions <range>] [--fix <high|medium|low|all>] [--report <high|medium|low|all>]
 ```
 
 - `language` selects the review skill family (`gleam`, `fsharp`, `elm`, etc.).
 - `types` optionally narrows to `code`, `security`, `performance`, and/or `test`.
 - `-r/--revisions` selects what changes to review. Default is `@`.
 - `--fix` auto-queues follow-up fix requests at or above the given severity threshold.
+- `--report` renders a deterministic markdown report for findings at or above the given severity threshold. Use it with `pi -p`.
 
 ### Examples
 
@@ -175,6 +176,8 @@ The repository includes an interactive code review command in `packages/code-rev
 /review gleam code security -r abc123
 /review gleam -r @ --fix high
 /review fsharp test -r main..@ --fix medium
+pi -p "/review gleam --report all"
+pi -p "/review fsharp security --report medium"
 ```
 
 ### Range resolution

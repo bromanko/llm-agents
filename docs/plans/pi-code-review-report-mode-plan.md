@@ -52,13 +52,15 @@ A fifth risk is that `process.stdout.write()` in print mode may not reach the us
 - [x] (2026-04-09 00:00Z) Reviewed the current `/review` extension, parser, and tests in `pi/code-review/extensions/index.ts`, `pi/code-review/lib/review-range.ts`, `pi/code-review/lib/review-range.test.ts`, and `test/extensions/code-review.test.ts`.
 - [x] (2026-04-09 00:00Z) Verified that `package.json` registers the review extension from `pi/code-review/extensions`, not from `packages/code-review/extensions`.
 - [x] (2026-04-09 00:00Z) Authored this ExecPlan for `--report` with headless `pi -p` output as the primary acceptance target.
-- [ ] Add parser and handler tests for `--report`, print-mode detection, `--fix`/`--report` exclusivity, report formatting, and parse-suspicion handling.
-- [ ] Implement `--report` argument parsing in `pi/code-review/lib/review-range.ts` and commit.
-- [ ] Spike: validate `process.argv` shape under `pi -p` and `pi --mode json` before implementing mode detection.
-- [ ] Implement mode detection, report formatting, ReviewDependencies extension, and handler branching in `pi/code-review/extensions/index.ts`.
-- [ ] Implement print-mode report output and stderr error writing.
-- [ ] Update `README.md` usage and examples, including correction of the stale `packages/code-review/...` path reference.
-- [ ] Run focused review tests, run the full test suite, and manually verify `pi -p "/review <language> --report all"` from the repository root.
+- [x] (2026-04-09 23:40Z) Added parser and handler tests for `--report`, print-mode detection, `--fix`/`--report` exclusivity, report formatting, and parse-suspicion handling in `pi/code-review/lib/review-range.test.ts` and `test/extensions/code-review.test.ts`.
+- [x] (2026-04-09 23:40Z) Implemented `--report` argument parsing in `pi/code-review/lib/review-range.ts`.
+- [x] (2026-04-09 23:40Z) Implemented mode detection, report formatting, ReviewDependencies output seams, and report branching in `pi/code-review/extensions/index.ts`.
+- [x] (2026-04-09 23:40Z) Implemented print-mode report output and stderr warning/error writing for parse-suspicion cases.
+- [x] (2026-04-09 23:40Z) Updated `README.md` usage and examples, including correction of the stale `packages/code-review/...` path reference.
+- [x] (2026-04-09 23:40Z) Ran the focused review tests: `node --experimental-strip-types --test pi/code-review/lib/review-range.test.ts test/extensions/code-review.test.ts` (86/86 passing after the final stdout-helper hardening pass).
+- [x] (2026-04-10 00:05Z) Validated the print-mode workflow through a temporary `/review2` wrapper that re-exports the real `registerReviewCommand` handler from `pi/code-review/extensions/index.ts`. Real `pi -p '/review2 typescript code --report high'` now emits the report on stdout, with stderr empty on success.
+- [x] (2026-04-10 00:15Z) Hardened the raw-stdout helper in `pi/code-review/extensions/index.ts`: failed output-guard loads now clear the cache for retry, the imported module shape is validated, fallback warnings are emitted only once, and helper behavior is covered by dedicated tests.
+- [ ] (2026-04-09 23:40Z) Full-suite verification is blocked by unrelated existing `pi/lsp` test failures caused by missing `vscode-jsonrpc` resolution in this workspace (`npm test` fails before the review changes are implicated).
 
 ## Surprises & Discoveries
 
@@ -68,8 +70,20 @@ A fifth risk is that `process.stdout.write()` in print mode may not reach the us
 - Observation: The review extension already has a dependency-injection seam named `ReviewDependencies`, so report output can be tested without coupling tests to a real TUI or real process streams.
   Evidence: `pi/code-review/extensions/index.ts` defines `ReviewDependencies` and uses injected implementations for parsing, diff gathering, review execution, finding processing, and fix queueing.
 
-- Observation: The current tests already exercise the no-UI early return path, so this feature will need to replace that behavior with a narrower rule rather than simply adding more tests.
-  Evidence: `test/extensions/code-review.test.ts` contains a test named `/review exits early when hasUI is false`.
+- Observation: The current tests already exercise the no-UI early return path, so this feature needed to replace that behavior with a narrower rule rather than simply adding more tests.
+  Evidence: `test/extensions/code-review.test.ts` previously contained a test named `/review exits early when hasUI is false`; it now has separate tests for default headless rejection, print-mode report output, interactive `--report` rejection, and JSON-mode rejection.
+
+- Observation: Direct `pi -p "/review ..."` invocations in this workspace did not execute the local review extension package, so end-to-end validation required a temporary wrapper command name (`/review2`) that called the same handler.
+  Evidence: `pi -p` with direct `/review` returned exit code 0 with empty stdout/stderr, while `pi -e /tmp/review2-current.ts -p '/review2 typescript code --report high'` exercised the real handler and produced a report.
+
+- Observation: Pi takes over `process.stdout.write()` in print mode and redirects ordinary stdout writes to stderr. Extension code must use pi's raw-stdout helper if it needs actual stdout output.
+  Evidence: inspecting `dist/core/output-guard.js` in the installed pi package shows `takeOverStdout()` replaces `process.stdout.write` with a wrapper around `process.stderr.write`, while `writeRawStdout()` bypasses that redirection.
+
+- Observation: The original print-mode implementation also had two runtime blockers beyond stdout routing: `resolveReviewRequestAuth()` assumed `getApiKeyAndHeaders()` always returned an object, and `runReviews()` always required `ctx.ui.custom()`/`BorderedLoader`.
+  Evidence: real `/review2` runs initially failed with `Cannot read properties of undefined (reading 'ok')`, and the default `runReviews()` implementation unconditionally constructed a spinner through `ctx.ui.custom()` despite `ctx.hasUI` being false in print mode.
+
+- Observation: `npm test` is not green in this workspace for reasons unrelated to the review change set.
+  Evidence: the run fails in `pi/lsp/test/{extension,interceptor,lsp-client,lsp-tool,server-manager}.test.ts` because Node cannot resolve `vscode-jsonrpc` from `pi/lsp/lib/lsp-client.ts`.
 
 ## Decision Log
 
@@ -93,17 +107,25 @@ A fifth risk is that `process.stdout.write()` in print mode may not reach the us
   Rationale: The primary use case is `pi -p` output. Deferring the interactive TUI viewer keeps the initial change small and avoids designing a custom TUI component before the report format stabilizes. A follow-up plan can add a read-only viewer once the feature is validated.
   Date: 2026-04-09
 
-- Decision: Runtime-mode detection uses an injectable `detectReviewOutputMode` helper that inspects `process.argv`, validated by a spike before implementation.
-  Rationale: The pi extension API does not currently expose a mode indicator on `ctx`. Inspecting `process.argv` is the simplest available mechanism, but its correctness depends on the pi runtime not consuming or rewriting argv before the handler runs. Making the helper injectable means tests never depend on real argv, and if the spike reveals argv is unreliable, only the default implementation changes.
+- Decision: Runtime-mode detection uses an injectable `detectReviewOutputMode` helper that inspects `process.argv`.
+  Rationale: The pi extension API does not currently expose a mode indicator on `ctx`. Inspecting `process.argv` is the simplest available mechanism, and making the helper injectable keeps tests deterministic and isolates future changes if pi exposes a first-class mode API later.
   Date: 2026-04-09
 
 - Decision: JSON mode + `--report` produces a specific error: `"--report requires print mode (-p). It cannot be used in JSON mode."`
   Rationale: A deterministic error message makes the rejection testable and gives the user a clear remediation path. Writing markdown into JSON event streams is the worst failure mode, so this case must be caught explicitly.
   Date: 2026-04-09
 
+- Decision: When a report-mode review yields zero parsed findings and the response is not suspiciously large, emit a zero-match report instead of a success toast.
+  Rationale: Report mode promises stdout content. An explicit zero-match document is more useful in shell pipelines than a UI-only success notification.
+  Date: 2026-04-09
+
 ## Outcomes & Retrospective
 
-This section will be filled in after implementation milestones complete.
+Implemented the planned `--report` mode across argument parsing, command routing, deterministic markdown rendering, stderr error routing for print mode, and README documentation. During runtime validation, two additional issues surfaced and were fixed: the default print-mode presenter was writing to `process.stdout`, which pi redirects to stderr in print mode, and the live review path still assumed interactive-only auth/UI behavior (`getApiKeyAndHeaders()` always returning an object, and `runReviews()` always using `ctx.ui.custom()` with a spinner). The final implementation now uses pi's raw stdout helper for reports, keeps warnings/errors on stderr, and runs reviews headlessly when `ctx.hasUI` is false.
+
+Focused parser and extension tests pass (86/86), including severity threshold filtering, output-mode classification, JSON-mode rejection, interactive-mode rejection, zero-match reporting, fatal setup errors on stderr, parse-suspicion stderr handling, and dedicated raw-stdout helper coverage for success, retry-after-failure, and one-time fallback warnings. Real print-mode validation through a temporary `/review2` wrapper confirmed that `pi -p '/review2 typescript code --report high'` now emits the report on stdout and leaves stderr empty on success. A second runtime check confirmed that the parse-suspicion warning still appears on stderr with empty stdout.
+
+The remaining repository-wide verification gap is still unrelated to this change: the full top-level `npm test` run is blocked by existing `pi/lsp` dependency-resolution failures (`vscode-jsonrpc` missing from the workspace runtime).
 
 ## Context and Orientation
 

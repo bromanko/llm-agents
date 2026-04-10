@@ -1,21 +1,23 @@
 /**
  * Interactive Code Review Extension
  *
- * /review <language> [types...] [-r|--revisions <range>] [--fix <level>]
+ * /review <language> [types...] [-r|--revisions <range>] [--fix <level>] [--report <level>]
  *
  * Examples:
- *   /review gleam                     — all gleam review skills on range @
- *   /review gleam code -r main..@     — only gleam-code-review for range main..@
+ *   /review gleam                      — all gleam review skills on range @
+ *   /review gleam code -r main..@      — only gleam-code-review for range main..@
  *   /review fsharp security --fix high — auto-fix HIGH findings in current range
+ *   pi -p "/review gleam --report all" — print the full review report to stdout
  *
  * Flow:
  *   1. Discovers matching review skills
  *   2. Reads code for the requested range (jj first, git fallback)
  *   3. Runs each skill via complete() with a spinner
  *   4. Parses findings from LLM output
- *   5. If --fix is set, auto-queues fixes by severity threshold
- *   6. Otherwise presents findings one-at-a-time in an inline TUI
- *   7. User picks: Fix / Fix with instructions / Skip / Stop
+ *   5. If --report is set, prints a deterministic markdown report in print mode
+ *   6. Else if --fix is set, auto-queues fixes by severity threshold
+ *   7. Otherwise presents findings one-at-a-time in an inline TUI
+ *   8. User picks: Fix / Fix with instructions / Skip / Stop
  */
 
 import type { UserMessage } from "@mariozechner/pi-ai";
@@ -96,6 +98,21 @@ const SEVERITY_COLORS: Record<string, string> = {
   MEDIUM: "warning",
   LOW: "muted",
 };
+
+const MIN_RESPONSE_FOR_SUSPICION = 200;
+const REVIEW_PARSE_WARNING =
+  "Review completed but no findings could be parsed — the response may not have used the expected format. Try again or check the diff format.";
+const SEVERITY_ORDER: Record<Finding["severity"], number> = {
+  HIGH: 0,
+  MEDIUM: 1,
+  LOW: 2,
+};
+
+function severityRank(s: Finding["severity"]): number {
+  return SEVERITY_ORDER[s] ?? 99;
+}
+
+type ReviewOutputMode = "interactive" | "print" | "json";
 
 type PiAiRuntime = {
   complete: (
@@ -202,7 +219,7 @@ export async function resolveReviewRequestAuth(
   try {
     if (typeof registry.getApiKeyAndHeaders === "function") {
       const result = await registry.getApiKeyAndHeaders(model);
-      if (result.ok) {
+      if (result && typeof result === "object" && "ok" in result && result.ok) {
         return {
           apiKey: isNonEmptyString(result.apiKey) ? result.apiKey : undefined,
           headers: result.headers,
@@ -237,6 +254,140 @@ export async function resolveReviewRequestAuth(
   return {};
 }
 
+type RawStdoutWriter = (text: string) => void;
+
+type OutputGuardModuleLoader = () => Promise<unknown>;
+
+let rawStdoutWriterPromise: Promise<RawStdoutWriter> | null = null;
+let reviewStdoutFallbackWarned = false;
+
+const defaultOutputGuardModuleLoader: OutputGuardModuleLoader = async () => {
+  const packageEntryUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
+  const outputGuardUrl = new URL("./core/output-guard.js", packageEntryUrl).href;
+  return import(outputGuardUrl);
+};
+
+let outputGuardModuleLoader: OutputGuardModuleLoader = defaultOutputGuardModuleLoader;
+
+function formatReviewStdoutError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function resetReviewStdoutStateForTests(): void {
+  rawStdoutWriterPromise = null;
+  reviewStdoutFallbackWarned = false;
+  outputGuardModuleLoader = defaultOutputGuardModuleLoader;
+}
+
+export function setOutputGuardModuleLoaderForTests(
+  loader: OutputGuardModuleLoader | null,
+): void {
+  outputGuardModuleLoader = loader ?? defaultOutputGuardModuleLoader;
+  rawStdoutWriterPromise = null;
+  reviewStdoutFallbackWarned = false;
+}
+
+async function getRawStdoutWriter(): Promise<RawStdoutWriter> {
+  if (!rawStdoutWriterPromise) {
+    rawStdoutWriterPromise = outputGuardModuleLoader()
+      .then((module) => {
+        if (!isRecord(module) || typeof module.writeRawStdout !== "function") {
+          throw new Error("output-guard module missing writeRawStdout export");
+        }
+        return module.writeRawStdout as RawStdoutWriter;
+      })
+      .catch((error) => {
+        rawStdoutWriterPromise = null;
+        throw error;
+      });
+  }
+
+  return rawStdoutWriterPromise;
+}
+
+function warnReviewStdoutFallback(error: unknown): void {
+  if (reviewStdoutFallbackWarned) return;
+  reviewStdoutFallbackWarned = true;
+
+  const reason = formatReviewStdoutError(error).trim();
+  process.stderr.write(
+    `[review] Raw stdout unavailable; falling back to process.stdout. Output may appear on stderr in print mode${reason ? ` (${reason})` : ""}.\n`,
+  );
+}
+
+export async function writeReviewStdout(text: string): Promise<void> {
+  try {
+    const writeRawStdout = await getRawStdoutWriter();
+    writeRawStdout(text);
+  } catch (error) {
+    warnReviewStdoutFallback(error);
+    process.stdout.write(text);
+  }
+}
+
+export function detectReviewOutputMode(argv: string[] = process.argv): ReviewOutputMode {
+  const hasJson = argv.some((arg, i) => arg === "--mode" && argv[i + 1] === "json");
+  const hasPrint = argv.includes("-p") || argv.includes("--print");
+
+  if (hasJson && hasPrint) {
+    throw new Error("Cannot combine --mode json with -p/--print");
+  }
+  if (hasJson) return "json";
+  if (hasPrint) return "print";
+  return "interactive";
+}
+
+export function buildFindingsReport(
+  findings: Finding[],
+  options: {
+    language: string;
+    range: string;
+    threshold: FixLevel;
+    totalFindings: number;
+  },
+): string {
+  const lines = [
+    "# Review report",
+    "",
+    `Language: ${options.language}`,
+    `Range: ${options.range}`,
+    `Threshold: ${options.threshold}`,
+    `Findings: ${findings.length} of ${options.totalFindings} matched`,
+    "",
+  ];
+
+  if (findings.length === 0) {
+    lines.push(`No findings matched --report ${options.threshold}.`, "");
+    return lines.join("\n");
+  }
+
+  let findingNumber = 0;
+  let currentSeverity: Finding["severity"] | null = null;
+
+  for (const finding of findings) {
+    if (finding.severity !== currentSeverity) {
+      if (currentSeverity !== null) {
+        lines.push("");
+      }
+      currentSeverity = finding.severity;
+      lines.push(`## ${finding.severity}`, "");
+    }
+
+    findingNumber += 1;
+    lines.push(`### ${findingNumber}. ${finding.title}`);
+    if (finding.file) {
+      lines.push(`File: ${finding.file}`);
+    }
+    lines.push(`Skill: ${finding.skill}`);
+    if (finding.effort) {
+      lines.push(`Effort: ${finding.effort}`);
+    }
+    lines.push("", `Issue:\n${finding.issue}`, "", `Suggested fix:\n${finding.suggestion}`, "");
+  }
+
+  return lines.join("\n");
+}
+
 export type ReviewDependencies = {
   skills?: ReviewSkill[];
   parseReviewArgs?: typeof parseReviewArgs;
@@ -246,6 +397,9 @@ export type ReviewDependencies = {
   showFinding?: typeof showFinding;
   buildFixMessage?: typeof buildFixMessage;
   queueFixFollowUp?: typeof queueFixFollowUp;
+  detectOutputMode?: () => ReviewOutputMode;
+  reportPresenter?: (report: string) => void | Promise<void>;
+  reportErrorWriter?: (message: string) => void;
 };
 
 export function registerReviewCommand(
@@ -262,6 +416,10 @@ export function registerReviewCommand(
   const showFindingUI = deps.showFinding ?? showFinding;
   const buildFixPrompt = deps.buildFixMessage ?? buildFixMessage;
   const queueFix = deps.queueFixFollowUp ?? queueFixFollowUp;
+  const detectOutputMode = deps.detectOutputMode ?? (() => detectReviewOutputMode());
+  const reportPresenter = deps.reportPresenter ?? ((report: string) => writeReviewStdout(report));
+  const reportErrorWriter = deps.reportErrorWriter
+    ?? ((message: string) => process.stderr.write(message + "\n"));
 
   pi.registerCommand("review", {
     description:
@@ -300,26 +458,54 @@ export function registerReviewCommand(
     },
 
     handler: async (args, ctx) => {
-      if (!ctx.hasUI) {
-        ctx.ui.notify("review requires interactive terminal", "error");
-        return;
-      }
-
-      if (!ctx.model) {
-        ctx.ui.notify("No model selected", "error");
-        return;
-      }
-
       const parsed = parseArgs(args);
+      const outputMode = detectOutputMode();
+      const isPrintReportMode = Boolean(parsed.options.reportLevel && outputMode === "print");
+      const notify = (message: string, level: NotificationLevel) => {
+        if (isPrintReportMode) {
+          if (level === "error" || level === "warning") {
+            reportErrorWriter(message);
+          }
+          // info/success suppressed in print mode
+          return;
+        }
+        ctx.ui.notify(message, level);
+      };
+
       if (parsed.error) {
         const langs = languages.join(", ");
-        ctx.ui.notify(`${parsed.error}\nLanguages: ${langs}`, "warning");
+        notify(`${parsed.error}\nLanguages: ${langs}`, "warning");
         return;
       }
 
       if (!parsed.language) {
         const langs = languages.join(", ");
-        ctx.ui.notify(`${REVIEW_USAGE}\nLanguages: ${langs}`, "warning");
+        notify(`${REVIEW_USAGE}\nLanguages: ${langs}`, "warning");
+        return;
+      }
+
+      if (parsed.options.reportLevel) {
+        if (outputMode === "json") {
+          notify(
+            "--report requires print mode (-p). It cannot be used in JSON mode.",
+            "error",
+          );
+          return;
+        }
+        if (outputMode !== "print") {
+          notify(
+            `--report requires print mode. Run: pi -p \"/review ${args.trim() || parsed.language}\"`,
+            "error",
+          );
+          return;
+        }
+      } else if (!ctx.hasUI) {
+        notify("review requires interactive terminal", "error");
+        return;
+      }
+
+      if (!ctx.model) {
+        notify("No model selected", "error");
         return;
       }
 
@@ -330,12 +516,12 @@ export function registerReviewCommand(
       if (skills.length === 0) {
         const available = getTypesForLanguage(allSkills, language);
         if (available.length === 0) {
-          ctx.ui.notify(
+          notify(
             `No review skills found for "${language}". Available: ${languages.join(", ")}`,
             "error",
           );
         } else {
-          ctx.ui.notify(
+          notify(
             `No matching review types. Available for ${language}: ${available.join(", ")}`,
             "error",
           );
@@ -343,20 +529,20 @@ export function registerReviewCommand(
         return;
       }
 
-      ctx.ui.notify(
+      notify(
         `Running ${skills.length} review skill${skills.length > 1 ? "s" : ""}: ${skills.map((s) => s.type).join(", ")} (range: ${parsed.options.range})`,
         "info",
       );
 
       const rangeResult = await getRangeDiff(pi, ctx, parsed.options.range);
       if (rangeResult.error) {
-        ctx.ui.notify(rangeResult.error, "error");
+        notify(rangeResult.error, "error");
         return;
       }
 
       const fullDiff = rangeResult.diff;
       if (fullDiff === null) {
-        ctx.ui.notify(
+        notify(
           `No code changes found for range ${parsed.options.range}`,
           "warning",
         );
@@ -369,7 +555,7 @@ export function registerReviewCommand(
         : fullDiff;
 
       if (codeContext === null) {
-        ctx.ui.notify(
+        notify(
           `No ${language} files found in range ${parsed.options.range}`,
           "warning",
         );
@@ -379,19 +565,19 @@ export function registerReviewCommand(
       const reviewFiles = extractFilesFromDiff(codeContext);
       if (reviewFiles.length > 0) {
         const fileList = reviewFiles.map((f) => `  ${f}`).join("\n");
-        ctx.ui.notify(
+        notify(
           `Reviewing ${reviewFiles.length} file${reviewFiles.length > 1 ? "s" : ""}:\n${fileList}`,
           "info",
         );
       }
 
-      const reviewResult = await runReviewSkills(pi, ctx, skills, codeContext);
+      const reviewResult = await runReviewSkills(ctx, skills, codeContext);
 
       if (!reviewResult.ok) {
         if (reviewResult.cancelled) {
-          ctx.ui.notify("Review cancelled", "info");
+          notify("Review cancelled", "info");
         } else {
-          ctx.ui.notify(`Review failed: ${reviewResult.error}`, "error");
+          notify(`Review failed: ${reviewResult.error}`, "error");
         }
         return;
       }
@@ -399,42 +585,63 @@ export function registerReviewCommand(
       const { findings: allFindings, totalResponseLength } = reviewResult;
 
       if (allFindings.length === 0) {
-        const MIN_RESPONSE_FOR_SUSPICION = 200;
+        if (parsed.options.reportLevel) {
+          if (totalResponseLength >= MIN_RESPONSE_FOR_SUSPICION) {
+            reportErrorWriter(REVIEW_PARSE_WARNING);
+            return;
+          }
+
+          await reportPresenter(buildFindingsReport([], {
+            language,
+            range: parsed.options.range,
+            threshold: parsed.options.reportLevel,
+            totalFindings: 0,
+          }));
+          return;
+        }
+
         if (totalResponseLength >= MIN_RESPONSE_FOR_SUSPICION) {
-          ctx.ui.notify(
-            "Review completed but no findings could be parsed — the response may not have used the expected format. Try again or check the diff format.",
-            "warning",
-          );
+          notify(REVIEW_PARSE_WARNING, "warning");
         } else {
-          ctx.ui.notify("No issues found! \u{1F389}", "success");
+          notify("No issues found! \u{1F389}", "success");
         }
         return;
       }
 
       const dedupedFindings = deduplicateFindings(allFindings);
 
-      const severityOrder: Record<string, number> = {
-        HIGH: 0,
-        MEDIUM: 1,
-        LOW: 2,
-      };
       dedupedFindings.sort(
-        (a, b) =>
-          (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3),
+        (a, b) => severityRank(a.severity) - severityRank(b.severity),
       );
 
       const duplicateCount = allFindings.length - dedupedFindings.length;
       if (duplicateCount > 0) {
-        ctx.ui.notify(
+        notify(
           `Merged ${duplicateCount} duplicate finding${duplicateCount > 1 ? "s" : ""} across review types.`,
           "info",
         );
       }
 
-      ctx.ui.notify(
+      notify(
         `Found ${dedupedFindings.length} issue${dedupedFindings.length > 1 ? "s" : ""}.`,
         "info",
       );
+
+      if (parsed.options.reportLevel) {
+        const reportLevel = parsed.options.reportLevel;
+        const matchedFindings = dedupedFindings.filter((finding) =>
+          matchesFixThreshold(finding.severity, reportLevel),
+        );
+
+        const report = buildFindingsReport(matchedFindings, {
+          language,
+          range: parsed.options.range,
+          threshold: reportLevel,
+          totalFindings: dedupedFindings.length,
+        });
+        await reportPresenter(report);
+        return;
+      }
 
       if (parsed.options.fixLevel) {
         const autoFixResult = await queueAutoFixes({
@@ -449,17 +656,17 @@ export function registerReviewCommand(
         notifyQueueSummary(ctx, autoFixResult);
 
         if (autoFixResult.skippedCount > 0) {
-          ctx.ui.notify(
+          notify(
             `Skipped ${autoFixResult.skippedCount} finding${autoFixResult.skippedCount > 1 ? "s" : ""} below --fix ${parsed.options.fixLevel}.`,
             "info",
           );
         }
 
-        ctx.ui.notify("Review complete", "info");
+        notify("Review complete", "info");
         return;
       }
 
-      ctx.ui.notify("Let's go through them.", "info");
+      notify("Let's go through them.", "info");
 
       const result = await processActions({
         pi,
@@ -471,13 +678,13 @@ export function registerReviewCommand(
       });
 
       if (result.stoppedAt !== null) {
-        ctx.ui.notify(
+        notify(
           `Stopped at finding ${result.stoppedAt + 1}/${dedupedFindings.length}`,
           "info",
         );
       }
       notifyQueueSummary(ctx, result);
-      ctx.ui.notify("Review complete", "info");
+      notify("Review complete", "info");
     },
   });
 }
@@ -632,19 +839,96 @@ export function extractResponseText(
 }
 
 /**
+ * Execute the review skills against the code context.
+ * Used by both the interactive spinner path and headless print mode.
+ */
+export async function executeReviewSkills(
+  ctx: ReviewContext,
+  skills: ReviewSkill[],
+  codeContext: string,
+  complete: PiAiRuntime["complete"],
+  options: {
+    signal?: AbortSignal;
+    onSkillStart?: (skill: ReviewSkill, index: number, total: number) => void;
+  } = {},
+): Promise<ReviewResult> {
+  const findings: Finding[] = [];
+  let totalResponseLength = 0;
+  const model = resolveReviewModelObject(ctx);
+
+  if (!model) {
+    return {
+      ok: false,
+      cancelled: false,
+      error: "No model selected",
+    };
+  }
+
+  const { apiKey, headers } = await resolveReviewRequestAuth(ctx, model);
+
+  // Skills run sequentially so each skill's system prompt can include
+  // findings from prior skills, enabling cross-skill deduplication.
+  for (let i = 0; i < skills.length; i++) {
+    const skill = skills[i]!;
+    options.onSkillStart?.(skill, i, skills.length);
+
+    const skillContent = await fs.promises.readFile(skill.path, "utf-8");
+    const systemPrompt = buildSystemPrompt(skillContent, findings);
+
+    const userMessage: UserMessage = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            "Please review the following code changes:\n\n```diff\n"
+            + codeContext
+            + "\n```",
+        },
+      ],
+      timestamp: Date.now(),
+    };
+
+    const response = await complete(
+      model,
+      { systemPrompt, messages: [userMessage] },
+      { apiKey, headers, signal: options.signal },
+    );
+
+    if (response.stopReason === "aborted") {
+      return { ok: false, cancelled: true };
+    }
+
+    const responseText = extractResponseText(response.content);
+    totalResponseLength += responseText.length;
+    findings.push(...parseFindings(responseText, skill.name));
+  }
+
+  return { ok: true, findings, totalResponseLength };
+}
+
+/**
  * Run all review skills against the code context.
- * Shows a spinner while processing.
+ * Shows a spinner when UI is available and runs headlessly otherwise.
  */
 async function runReviews(
-  pi: ExtensionAPI,
   ctx: ReviewContext,
   skills: ReviewSkill[],
   codeContext: string,
 ): Promise<ReviewResult> {
-  const [{ complete }, { BorderedLoader }] = await Promise.all([
-    getPiAiRuntime(),
-    getCodingAgentRuntime(),
-  ]);
+  const { complete } = await getPiAiRuntime();
+
+  if (!ctx.hasUI) {
+    try {
+      return await executeReviewSkills(ctx, skills, codeContext, complete);
+    } catch (err) {
+      console.error("Review failed:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, cancelled: false, error: message };
+    }
+  }
+
+  const { BorderedLoader } = await getCodingAgentRuntime();
 
   const result = await ctx.ui.custom<ReviewResult>(
     (tui: any, theme: any, _kb: any, done: (v: ReviewResult) => void) => {
@@ -655,68 +939,14 @@ async function runReviews(
       );
       loader.onAbort = () => done({ ok: false, cancelled: true });
 
-      const doReviews = async () => {
-        const findings: Finding[] = [];
-        let totalResponseLength = 0;
-        const model = resolveReviewModelObject(ctx);
-
-        if (!model) {
-          return {
-            ok: false as const,
-            cancelled: false as const,
-            error: "No model selected",
-          };
-        }
-
-        const { apiKey, headers } = await resolveReviewRequestAuth(ctx, model);
-
-        for (let i = 0; i < skills.length; i++) {
-          const skill = skills[i];
-
-          // Update the inner loader's message to show progress
-          // The loader field is the CancellableLoader/Loader which has setMessage()
+      executeReviewSkills(ctx, skills, codeContext, complete, {
+        signal: loader.signal,
+        onSkillStart: (skill, index, total) => {
           (loader as any).loader?.setMessage?.(
-            `[${i + 1}/${skills.length}] Running ${skill.name}...`,
+            `[${index + 1}/${total}] Running ${skill.name}...`,
           );
-
-          const skillContent = fs.readFileSync(skill.path, "utf-8");
-
-          const systemPrompt = buildSystemPrompt(skillContent, findings);
-
-          const userMessage: UserMessage = {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text:
-                  "Please review the following code changes:\n\n```diff\n" +
-                  codeContext +
-                  "\n```",
-              },
-            ],
-            timestamp: Date.now(),
-          };
-
-          const response = await complete(
-            model,
-            { systemPrompt, messages: [userMessage] },
-            { apiKey, headers, signal: loader.signal },
-          );
-
-          if (response.stopReason === "aborted") {
-            return { ok: false as const, cancelled: true as const };
-          }
-
-          const responseText = extractResponseText(response.content);
-
-          totalResponseLength += responseText.length;
-          findings.push(...parseFindings(responseText, skill.name));
-        }
-
-        return { ok: true as const, findings, totalResponseLength };
-      };
-
-      doReviews()
+        },
+      })
         .then(done)
         .catch((err) => {
           console.error("Review failed:", err);

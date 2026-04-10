@@ -47,11 +47,26 @@ test("parseReviewArgs parses --fix values", () => {
   }
 });
 
+test("parseReviewArgs parses --report values", () => {
+  for (const level of ["high", "medium", "low", "all"] as const) {
+    const parsed = parseReviewArgs(`gleam --report ${level}`);
+    assert.equal(parsed.error, undefined);
+    assert.equal(parsed.options.reportLevel, level);
+  }
+});
+
 test("parseReviewArgs rejects invalid --fix values", () => {
   const parsed = parseReviewArgs("gleam --fix urgent");
 
   assert.ok(parsed.error);
   assert.match(parsed.error!, /Invalid --fix level "urgent"/);
+});
+
+test("parseReviewArgs rejects invalid --report values", () => {
+  const parsed = parseReviewArgs("gleam --report urgent");
+
+  assert.ok(parsed.error);
+  assert.match(parsed.error!, /Invalid --report level "urgent"/);
 });
 
 // --- Finding 15: unknown flags test ---
@@ -368,6 +383,23 @@ test("parseReviewArgs rejects --fix without a value", () => {
   const followedByFlag = parseReviewArgs("gleam --fix -r @");
   assert.ok(followedByFlag.error);
   assert.match(followedByFlag.error!, /Missing value for --fix/);
+});
+
+test("parseReviewArgs rejects --report without a value", () => {
+  const endOfInput = parseReviewArgs("gleam --report");
+  assert.ok(endOfInput.error);
+  assert.match(endOfInput.error!, /Missing value for --report/);
+
+  const followedByFlag = parseReviewArgs("gleam --report -r @");
+  assert.ok(followedByFlag.error);
+  assert.match(followedByFlag.error!, /Missing value for --report/);
+});
+
+test("parseReviewArgs rejects using --fix and --report together", () => {
+  const parsed = parseReviewArgs("gleam --fix high --report all");
+
+  assert.ok(parsed.error);
+  assert.match(parsed.error!, /Cannot use --fix and --report together/);
 });
 
 // --- Finding 17: exec options (timeout and cwd) propagation ---
