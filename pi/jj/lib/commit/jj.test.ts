@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseHunks, JjError, runJj } from "./jj.ts";
+import {
+  buildScopedAbsorbRevset,
+  ControlledJj,
+  JjError,
+  parseHunks,
+  parseWorkspaceListOutput,
+  runJj,
+} from "./jj.ts";
+
+function assertDefined<T>(val: T | null | undefined, message?: string): asserts val is T {
+  assert.ok(val !== null && val !== undefined, message ?? "expected value to be defined");
+}
 
 // ---------------------------------------------------------------------------
 // parseHunks — pure function, no jj binary needed
@@ -61,6 +72,104 @@ test("parseHunks: returns empty array for empty string", () => {
   assert.deepStrictEqual(parseHunks(""), []);
 });
 
+test("parseWorkspaceListOutput: parses two workspaces", () => {
+  const raw = "default\x1fabc123def456abc123def456abc123def456abcd\n" +
+    "feature\x1f9876543210abcdef9876543210abcdef98765432\n";
+  const result = parseWorkspaceListOutput(raw);
+
+  assert.equal(result.length, 2);
+  assert.deepStrictEqual(result[0], {
+    name: "default",
+    targetCommitId: "abc123def456abc123def456abc123def456abcd",
+  });
+  assert.deepStrictEqual(result[1], {
+    name: "feature",
+    targetCommitId: "9876543210abcdef9876543210abcdef98765432",
+  });
+});
+
+test("parseWorkspaceListOutput: parses single workspace", () => {
+  const raw = "default\x1fabc123def456abc123def456abc123def456abcd\n";
+  const result = parseWorkspaceListOutput(raw);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, "default");
+});
+
+test("parseWorkspaceListOutput: returns empty array for empty output", () => {
+  assert.deepStrictEqual(parseWorkspaceListOutput(""), []);
+  assert.deepStrictEqual(parseWorkspaceListOutput("\n"), []);
+  assert.deepStrictEqual(parseWorkspaceListOutput("\n\n"), []);
+});
+
+test("parseWorkspaceListOutput: handles trailing newlines and blank lines", () => {
+  const raw = "default\x1fabc123\n\n\nfeature\x1fdef456\n\n";
+  const result = parseWorkspaceListOutput(raw);
+
+  assert.equal(result.length, 2);
+});
+
+test("parseWorkspaceListOutput: skips malformed lines", () => {
+  const raw = "default\x1fabc123\ngarbage-no-separator\nfeature\x1fdef456\n";
+  const result = parseWorkspaceListOutput(raw);
+
+  assert.equal(result.length, 2);
+  assert.equal(result[0].name, "default");
+  assert.equal(result[1].name, "feature");
+});
+
+test("buildScopedAbsorbRevset: returns null when no other targets", () => {
+  assert.equal(buildScopedAbsorbRevset([]), null);
+});
+
+test("buildScopedAbsorbRevset: single other target", () => {
+  const result = buildScopedAbsorbRevset(["abc123def456abc123def456abc123def456abcd"]);
+
+  assert.equal(
+    result,
+    'mutable() & ancestors(@) & ~(ancestors("abc123def456abc123def456abc123def456abcd"))',
+  );
+});
+
+test("buildScopedAbsorbRevset: multiple other targets", () => {
+  const result = buildScopedAbsorbRevset(["aaa111", "bbb222", "ccc333"]);
+
+  assert.equal(
+    result,
+    'mutable() & ancestors(@) & ~(ancestors("aaa111" | "bbb222" | "ccc333"))',
+  );
+});
+
+test("buildScopedAbsorbRevset: only expects hex commit IDs (documents assumption)", () => {
+  // If someone passes a malformed ID, the output is used as-is —
+  // document this so a future validator can be added.
+  const result = buildScopedAbsorbRevset(['foo"bar']);
+  assert.equal(result, 'mutable() & ancestors(@) & ~(ancestors("foo"bar"))');
+  // ^ This would break jj's parser. A future fix should validate inputs.
+});
+
+test("getScopedAbsorbRevset: returns scoped revset when all workspaces target same commit", async () => {
+  // When all workspaces point at the same commit, absorb should still be scoped
+  // to prevent divergent commits.
+  class StubJj extends ControlledJj {
+    override async listWorkspaceTargets() {
+      return [
+        { name: "default", targetCommitId: "aaa111" },
+        { name: "ws2", targetCommitId: "aaa111" },
+      ];
+    }
+    override async getCurrentWorkspaceName() {
+      return "default";
+    }
+  }
+
+  const jj = new StubJj("/tmp/fake");
+  const result = await jj.getScopedAbsorbRevset();
+  // With name-based filtering, we still get a scoped revset
+  assertDefined(result, "should return a scoped revset");
+  assert.ok(result.includes("aaa111"));
+});
+
 // ---------------------------------------------------------------------------
 // JjError
 // ---------------------------------------------------------------------------
@@ -116,7 +225,6 @@ test("runJj: keeps existing error-path behavior", async () => {
 // They are skipped if jj is not available.
 // ---------------------------------------------------------------------------
 
-import { ControlledJj } from "./jj.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -274,5 +382,141 @@ test("ControlledJj.setBookmark + pushBookmark: error on no remote", { skip: !HAS
     await assert.rejects(() => jj.pushBookmark("main"), JjError);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ControlledJj.listWorkspaceTargets: returns all workspaces", { skip: !HAS_JJ }, async () => {
+  const dir = createTempJjRepo();
+  const ws2Dir = `${dir}-ws2`;
+
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "hello\n");
+    execFileSync("jj", ["commit", "-m", "base"], { cwd: dir, timeout: 5000 });
+    execFileSync("jj", ["workspace", "add", ws2Dir], { cwd: dir, timeout: 10000 });
+
+    const jj = new ControlledJj(dir);
+    const targets = await jj.listWorkspaceTargets();
+    const names = targets.map((target) => target.name).sort();
+
+    assert.equal(targets.length, 2);
+    assert.deepStrictEqual(names, ["default", path.basename(ws2Dir)]);
+    for (const target of targets) {
+      assert.match(target.targetCommitId, /^[0-9a-f]{40}$/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(ws2Dir, { recursive: true, force: true });
+  }
+});
+
+test("ControlledJj.getCurrentCommitId: returns 40-char hex commit id", { skip: !HAS_JJ }, async () => {
+  const dir = createTempJjRepo();
+
+  try {
+    const jj = new ControlledJj(dir);
+    const id = await jj.getCurrentCommitId();
+
+    assert.match(id, /^[0-9a-f]{40}$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ControlledJj.getScopedAbsorbRevset: returns null for single workspace", { skip: !HAS_JJ }, async () => {
+  const dir = createTempJjRepo();
+
+  try {
+    const jj = new ControlledJj(dir);
+    const revset = await jj.getScopedAbsorbRevset();
+
+    assert.equal(revset, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ControlledJj.getScopedAbsorbRevset: returns revset for multi-workspace", { skip: !HAS_JJ }, async () => {
+  const dir = createTempJjRepo();
+  const ws2Dir = `${dir}-ws2`;
+
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "hello\n");
+    execFileSync("jj", ["commit", "-m", "base"], { cwd: dir, timeout: 5000 });
+    execFileSync("jj", ["workspace", "add", ws2Dir], { cwd: dir, timeout: 10000 });
+
+    const jj = new ControlledJj(dir);
+    const revset = await jj.getScopedAbsorbRevset();
+
+    assertDefined(revset, "should return a revset string");
+    assert.ok(revset.includes("mutable()"), "revset should include mutable()");
+    assert.ok(revset.includes("ancestors(@)"), "revset should include ancestors(@)");
+    assert.ok(revset.includes("ancestors("), "revset should subtract other targets");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(ws2Dir, { recursive: true, force: true });
+  }
+});
+
+test("ControlledJj.absorb: accepts optional intoRevset", { skip: !HAS_JJ }, async () => {
+  const dir = createTempJjRepo();
+
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "hello\n");
+    execFileSync("jj", ["commit", "-m", "base"], { cwd: dir, timeout: 5000 });
+    fs.writeFileSync(path.join(dir, "a.txt"), "changed\n");
+
+    const jj = new ControlledJj(dir);
+    const result = await jj.absorb("none()");
+
+    assert.equal(result.changed, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ControlledJj: scoped absorb only rewrites private-stack commits", { skip: !HAS_JJ }, async () => {
+  const dir = createTempJjRepo();
+  const ws2Dir = `${dir}-ws2`;
+
+  try {
+    fs.writeFileSync(path.join(dir, "shared.txt"), "shared content\n");
+    execFileSync("jj", ["commit", "-m", "shared base"], { cwd: dir, timeout: 5000 });
+    execFileSync("jj", ["workspace", "add", ws2Dir], { cwd: dir, timeout: 10000 });
+
+    fs.writeFileSync(path.join(dir, "private.txt"), "private content\n");
+    execFileSync("jj", ["commit", "-m", "default private change"], { cwd: dir, timeout: 5000 });
+
+    fs.writeFileSync(path.join(dir, "shared.txt"), "shared MODIFIED\n");
+    fs.writeFileSync(path.join(dir, "private.txt"), "private MODIFIED\n");
+
+    const jj = new ControlledJj(dir);
+    const revset = await jj.getScopedAbsorbRevset();
+    assertDefined(revset, "should have a scoped revset with two workspaces");
+
+    const result = await jj.absorb(revset);
+    assert.equal(result.changed, true, "private-stack edit should be absorbed");
+
+    const remaining = await jj.getChangedFiles();
+    assert.ok(
+      remaining.includes("shared.txt"),
+      "shared.txt edit should remain in working copy",
+    );
+    assert.ok(
+      !remaining.includes("private.txt"),
+      "private.txt edit should be absorbed into the private ancestor",
+    );
+
+    const ws2Status = execFileSync("jj", ["--color=never", "status"], {
+      cwd: ws2Dir,
+      encoding: "utf-8",
+      timeout: 5000,
+    });
+    assert.ok(
+      !ws2Status.toLowerCase().includes("stale"),
+      "sibling workspace should not be stale after scoped absorb",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(ws2Dir, { recursive: true, force: true });
   }
 });

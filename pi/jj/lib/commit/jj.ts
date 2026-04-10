@@ -14,6 +14,11 @@ export interface DiffHunk {
   content: string;
 }
 
+export interface WorkspaceTarget {
+  name: string;
+  targetCommitId: string;
+}
+
 export class JjError extends Error {
   command: string;
   stderr: string;
@@ -127,9 +132,13 @@ export class ControlledJj {
    * Run `jj absorb` to automatically move working-copy changes into ancestor commits.
    * Returns whether any changes were absorbed and the raw output.
    */
-  async absorb(): Promise<{ changed: boolean; output: string }> {
+  async absorb(intoRevset?: string): Promise<{ changed: boolean; output: string }> {
     try {
-      const { stdout, stderr } = await runJj(this.cwd, ["absorb"]);
+      const args = ["absorb"];
+      if (intoRevset) {
+        args.push("--into", intoRevset);
+      }
+      const { stdout, stderr } = await runJj(this.cwd, args);
       const output = (stdout + "\n" + stderr).trim();
       // If absorb reports "Nothing changed" or empty output, no changes absorbed
       const changed = !(/nothing changed/i.test(output) || output.length === 0);
@@ -141,6 +150,64 @@ export class ControlledJj {
       }
       throw err;
     }
+  }
+
+  async listWorkspaceTargets(): Promise<WorkspaceTarget[]> {
+    const { stdout } = await runJj(this.cwd, [
+      "workspace",
+      "list",
+      "-T",
+      'name ++ "\\x1f" ++ self.target().commit_id() ++ "\\n"',
+    ]);
+    return parseWorkspaceListOutput(stdout);
+  }
+
+  async getCurrentCommitId(): Promise<string> {
+    const { stdout } = await runJj(this.cwd, [
+      "log",
+      "-r",
+      "@",
+      "-T",
+      "self.commit_id()",
+      "--no-graph",
+    ]);
+    return stdout.trim();
+  }
+
+  /**
+   * Returns the name of the current workspace by parsing the default
+   * `jj workspace list` output for the `(current)` marker.
+   */
+  async getCurrentWorkspaceName(): Promise<string> {
+    const { stdout } = await runJj(this.cwd, ["workspace", "list"]);
+    for (const line of stdout.split("\n")) {
+      if (line.includes("(current)")) {
+        const name = line.split(":")[0].trim();
+        if (name) return name;
+      }
+    }
+    return "default";
+  }
+
+  async getScopedAbsorbRevset(): Promise<string | null> {
+    const [workspaces, currentName] = await Promise.all([
+      this.listWorkspaceTargets(),
+      this.getCurrentWorkspaceName(),
+    ]);
+
+    if (workspaces.length <= 1) {
+      return null;
+    }
+
+    const otherTargetIds = workspaces
+      .filter((workspace) => workspace.name !== currentName)
+      .map((workspace) => workspace.targetCommitId);
+
+    if (otherTargetIds.length === 0) {
+      return null;
+    }
+
+    return buildScopedAbsorbRevset(otherTargetIds);
   }
 
   /**
@@ -224,4 +291,29 @@ export function parseHunks(diff: string): DiffHunk[] {
   }
 
   return hunks;
+}
+
+export function parseWorkspaceListOutput(raw: string): WorkspaceTarget[] {
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const parts = line.split("\x1f");
+      if (parts.length !== 2) {
+        return [];
+      }
+
+      const [name, targetCommitId] = parts;
+      return [{ name, targetCommitId }];
+    });
+}
+
+export function buildScopedAbsorbRevset(otherTargetCommitIds: string[]): string | null {
+  if (otherTargetCommitIds.length === 0) {
+    return null;
+  }
+
+  const targetSet = otherTargetCommitIds.map((id) => `"${id}"`).join(" | ");
+  return `mutable() & ancestors(@) & ~(ancestors(${targetSet}))`;
 }
