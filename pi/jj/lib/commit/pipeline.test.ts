@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runCommitPipeline, pushWithBookmark } from "./pipeline.ts";
-import type { PipelineContext, AgenticSessionInput, AgenticSessionResult } from "./pipeline.ts";
+import type { PipelineContext } from "./pipeline.ts";
 import type { ModelCandidate } from "./model-resolver.ts";
 import type { CommitProposal, SplitCommitPlan } from "./types.ts";
 
@@ -17,7 +17,8 @@ interface MockJjOptions {
   diff?: string;
   stat?: string;
   absorbResult?: { changed: boolean; output: string };
-  hasOtherWorkspaces?: boolean;
+  scopedAbsorbRevset?: string | null;
+  scopedAbsorbRevsetError?: boolean;
   commitLog?: string[][];
   bookmarkCalls?: string[][];
   pushCalls?: string[];
@@ -28,14 +29,22 @@ function createMockJj(opts: MockJjOptions = {}) {
   const bookmarkCalls: string[][] = opts.bookmarkCalls ?? [];
   const pushCalls: string[] = opts.pushCalls ?? [];
 
-  return {
+  const jjObj = {
     getChangedFiles: async () => opts.changedFiles ?? [],
     getDiffGit: async () => opts.diff ?? "",
     getStat: async () => opts.stat ?? "",
     getHunks: async () => [],
     getRecentCommits: async () => [],
-    absorb: async () => opts.absorbResult ?? { changed: false, output: "" },
-    hasOtherWorkspaces: async () => opts.hasOtherWorkspaces ?? false,
+    getScopedAbsorbRevset: async () => {
+      if (opts.scopedAbsorbRevsetError) {
+        throw new Error("workspace query failed");
+      }
+      return opts.scopedAbsorbRevset ?? null;
+    },
+    absorb: async (intoRevset?: string) => {
+      jjObj._lastAbsorbRevset = intoRevset;
+      return opts.absorbResult ?? { changed: false, output: "" };
+    },
     commit: async (message: string, files?: string[]) => {
       commitLog.push([message, ...(files ?? [])]);
     },
@@ -48,7 +57,10 @@ function createMockJj(opts: MockJjOptions = {}) {
     _commitLog: commitLog,
     _bookmarkCalls: bookmarkCalls,
     _pushCalls: pushCalls,
+    _lastAbsorbRevset: undefined as string | undefined,
   };
+
+  return jjObj;
 }
 
 const sessionModel: ModelCandidate = {
@@ -150,16 +162,18 @@ test("pipeline: runs absorb when not disabled", async () => {
     diff: "diff",
     stat: "stat",
     absorbResult: { changed: false, output: "" },
+    scopedAbsorbRevset: null,
   });
   const origAbsorb = jj.absorb;
-  jj.absorb = async () => {
+  jj.absorb = async (intoRevset?: string) => {
     absorbCalled = true;
-    return origAbsorb();
+    return origAbsorb(intoRevset);
   };
 
   const ctx = createBasicContext({ jj: jj as any });
   await runCommitPipeline(ctx);
   assert.ok(absorbCalled, "absorb should have been called");
+  assert.equal(jj._lastAbsorbRevset, undefined);
 });
 
 test("pipeline: skips absorb when disabled", async () => {
@@ -193,13 +207,56 @@ test("pipeline: all changes absorbed means nothing left to commit", async () => 
   assert.ok(result.summary.includes("absorbed"));
 });
 
-test("pipeline: skips absorb when other workspaces exist", async () => {
+test("pipeline: runs scoped absorb with revset from getScopedAbsorbRevset", async () => {
+  let absorbCalled = false;
+  let capturedRevset: string | undefined;
+  const scopedRevset = 'mutable() & ancestors(@) & ~(ancestors("abc123"))';
+  const jj = createMockJj({
+    changedFiles: ["src/main.ts"],
+    diff: "diff",
+    stat: "stat",
+    scopedAbsorbRevset: scopedRevset,
+  });
+  jj.absorb = async (intoRevset?: string) => {
+    absorbCalled = true;
+    capturedRevset = intoRevset;
+    return { changed: false, output: "" };
+  };
+
+  const ctx = createBasicContext({ jj: jj as any });
+  await runCommitPipeline(ctx);
+  assert.ok(absorbCalled, "absorb should have been called");
+  assert.equal(capturedRevset, scopedRevset);
+});
+
+test("pipeline: runs plain absorb when getScopedAbsorbRevset returns null", async () => {
+  let absorbCalled = false;
+  let capturedRevset: string | undefined;
+  const jj = createMockJj({
+    changedFiles: ["src/main.ts"],
+    diff: "diff",
+    stat: "stat",
+    scopedAbsorbRevset: null,
+  });
+  jj.absorb = async (intoRevset?: string) => {
+    absorbCalled = true;
+    capturedRevset = intoRevset;
+    return { changed: false, output: "" };
+  };
+
+  const ctx = createBasicContext({ jj: jj as any });
+  await runCommitPipeline(ctx);
+  assert.ok(absorbCalled, "absorb should have been called");
+  assert.equal(capturedRevset, undefined, "should run plain absorb without --into");
+});
+
+test("pipeline: skips absorb when workspace query fails", async () => {
   let absorbCalled = false;
   const jj = createMockJj({
     changedFiles: ["src/main.ts"],
     diff: "diff",
     stat: "stat",
-    hasOtherWorkspaces: true,
+    scopedAbsorbRevsetError: true,
   });
   jj.absorb = async () => {
     absorbCalled = true;
@@ -208,8 +265,9 @@ test("pipeline: skips absorb when other workspaces exist", async () => {
 
   const ctx = createBasicContext({ jj: jj as any });
   const result = await runCommitPipeline(ctx);
-  assert.ok(!absorbCalled, "absorb should not have been called when other workspaces exist");
-  assert.ok(result.warnings.some((w) => w.includes("other workspaces detected")));
+  assert.ok(!absorbCalled, "absorb should not be called when workspace query fails");
+  assert.ok(result.warnings.some((w) => w.includes("skipping absorb to be safe")));
+  assert.ok(result.summary, "pipeline should still complete successfully");
 });
 
 test("pipeline: uses agentic session when model and session available", async () => {
