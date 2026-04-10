@@ -118,28 +118,13 @@ is needed.
 - [x] (2026-04-10 16:24Z) Investigated repository history and confirmed this repo never implemented scoped multi-workspace absorb; current behavior was introduced by `c3e58275478b` and `cabd0e94ccf5`.
 - [x] (2026-04-10 16:24Z) Reproduced that plain `jj absorb` rewrites shared ancestors across workspaces and leaves sibling workspaces stale.
 - [x] (2026-04-10 16:24Z) Reproduced that `jj absorb --into 'ancestors(@) ~ ancestors(<other-target>)'` safely absorbs only private-stack edits and leaves shared-history edits in the working copy.
-- [ ] Milestone 1, step 1: Add `WorkspaceTarget` interface to `pi/jj/lib/commit/jj.ts`.
-- [ ] Milestone 1, step 2: Add `parseWorkspaceListOutput()` to `pi/jj/lib/commit/jj.ts`.
-- [ ] Milestone 1, step 3: Write unit tests for `parseWorkspaceListOutput()` in `pi/jj/lib/commit/jj.test.ts`.
-- [ ] Milestone 1, step 4: Run `pi/jj/lib/commit/jj.test.ts` — new parsing tests pass.
-- [ ] Milestone 1, step 5: Add `buildScopedAbsorbRevset()` to `pi/jj/lib/commit/jj.ts`.
-- [ ] Milestone 1, step 6: Write unit tests for `buildScopedAbsorbRevset()` in `pi/jj/lib/commit/jj.test.ts`.
-- [ ] Milestone 1, step 7: Run `pi/jj/lib/commit/jj.test.ts` — revset builder tests pass.
-- [ ] Milestone 1, step 8: Add `listWorkspaceTargets()` and `getCurrentCommitId()` to `ControlledJj`.
-- [ ] Milestone 1, step 9: Add `getScopedAbsorbRevset()` to `ControlledJj`.
-- [ ] Milestone 1, step 10: Add optional `intoRevset` parameter to `ControlledJj.absorb()`.
-- [ ] Milestone 1, step 11: Write integration tests for workspace helpers in `pi/jj/lib/commit/jj.test.ts`.
-- [ ] Milestone 1, step 12: Run `pi/jj/lib/commit/jj.test.ts` — all tests pass. Commit.
-- [ ] Milestone 2, step 1: Write new pipeline test — multi-workspace with private targets calls scoped absorb.
-- [ ] Milestone 2, step 2: Write new pipeline test — plain absorb when getScopedAbsorbRevset returns null.
-- [ ] Milestone 2, step 3: Write new pipeline test — workspace query failure skips absorb conservatively.
-- [ ] Milestone 2, step 4: Run `pi/jj/lib/commit/pipeline.test.ts` — new tests fail (red).
-- [ ] Milestone 2, step 5: Replace binary skip logic in `pi/jj/lib/commit/pipeline.ts` with scoped absorb logic.
-- [ ] Milestone 2, step 6: Run `pi/jj/lib/commit/pipeline.test.ts` — all tests pass (green). Commit.
-- [ ] Milestone 3, step 1: Write integration test — scoped absorb in multi-workspace repo.
-- [ ] Milestone 3, step 2: Run `pi/jj/lib/commit/jj.test.ts` — integration test passes. Commit.
-- [ ] Milestone 3, step 3: Run full test suite.
-- [ ] Milestone 3, step 4: Manual validation in temp repo.
+- [x] (2026-04-10 17:51Z) Added `WorkspaceTarget`, `parseWorkspaceListOutput()`, `buildScopedAbsorbRevset()`, `listWorkspaceTargets()`, `getCurrentCommitId()`, `getScopedAbsorbRevset()`, and optional `intoRevset` support in `pi/jj/lib/commit/jj.ts`.
+- [x] (2026-04-10 17:51Z) Added pure-function and real-jj integration coverage in `pi/jj/lib/commit/jj.test.ts`, including the safety test proving scoped absorb rewrites only the private-stack commit.
+- [x] (2026-04-10 17:51Z) Replaced the blanket multi-workspace absorb skip in `pi/jj/lib/commit/pipeline.ts` with revset-scoped absorb and updated `pi/jj/lib/commit/pipeline.test.ts` to cover scoped absorb, plain absorb, and conservative skip-on-query-failure behavior.
+- [x] (2026-04-10 17:51Z) Ran targeted tests: `node --experimental-strip-types --test pi/jj/lib/commit/jj.test.ts` and `node --experimental-strip-types --test pi/jj/lib/commit/pipeline.test.ts`.
+- [x] (2026-04-10 17:51Z) Ran full validation: `node --experimental-strip-types --test pi/jj/lib/commit/*.test.ts` and `node --experimental-strip-types --test test/extensions/jj-commit*.test.ts`.
+- [x] (2026-04-10 17:51Z) Manually validated in a temp multi-workspace repo that scoped absorb leaves `shared.txt` in the working copy, absorbs the private-stack edit, and leaves the sibling workspace healthy.
+- [x] (2026-04-10 17:51Z) Intentionally left VCS commits out of this session; the working tree now contains the full implementation and passing tests but no new jj/git commit.
 
 ## Surprises & Discoveries
 
@@ -155,6 +140,9 @@ is needed.
 - Observation: `jj absorb --into 'none()'` succeeds with "Nothing changed." and exit code 0 when the revset resolves to zero commits. No special handling is needed for the empty-destination case.
 
 - Observation: `jj log -r @ -T 'self.commit_id()' --no-graph` returns the full 40-character hex commit ID for the current workspace's working-copy commit. This is the most reliable way to identify the current workspace from the workspace list.
+
+- Observation: in a real two-workspace repo, `jj absorb --into <scoped-revset>` rebases the current workspace's working-copy commit after rewriting the private ancestor, but the sibling workspace remains healthy and `jj status` reports no stale state.
+  Evidence: manual validation produced `Absorbed changes into 1 revisions`, `Rebased 1 descendant commits.`, `Remaining changes: M shared.txt`, and the sibling workspace printed `The working copy has no changes.`
 
 ## Decision Log
 
@@ -182,9 +170,19 @@ is needed.
   Rationale: matches the existing pattern of `parseHunks()` in the same file — a pure function exported alongside the class.
   Date: 2026-04-10
 
+- Decision: leave `hasOtherWorkspaces()` in `pi/jj/lib/commit/jj.ts` for compatibility even though `runCommitPipeline()` no longer calls it.
+  Rationale: the new feature only required replacing the pipeline decision path; removing the helper would widen the change for no user-visible benefit.
+  Date: 2026-04-10
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Implemented the workspace-aware absorb path described in this plan. `pi/jj/lib/commit/jj.ts` now computes a safe workspace-private revset, `pi/jj/lib/commit/pipeline.ts` now uses that revset to run `jj absorb --into` when other workspace targets must be protected, and the previous blanket skip is gone.
+
+The result matches the original purpose: `/jj-commit` can now recover safe absorb behavior in multi-workspace repositories instead of forcing users to commit every private-stack edit manually. The new tests prove the three important cases: single-workspace repos still run plain absorb, multi-workspace repos run scoped absorb, and workspace-query failures still skip absorb conservatively.
+
+The highest-risk claim in the plan was that scoped absorb would avoid making sibling workspaces stale. Both the real-jj integration test and a separate temp-repo manual validation confirmed that behavior: private-stack edits were absorbed, shared-history edits remained in the working copy, and the sibling workspace stayed healthy.
+
+One item intentionally deferred in this session was VCS commit creation. The implementation and validations are complete in the working tree, but no jj/git commit was created.
 
 ## Context and Orientation
 
