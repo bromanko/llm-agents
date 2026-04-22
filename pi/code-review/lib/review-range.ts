@@ -156,6 +156,10 @@ export function translateJjToGitRange(range: string): string {
   return range.replace(/(^|(?:\.\.))@(?=(\.\.)|$)/g, "$1HEAD");
 }
 
+export function rangeIncludesWorkingCopy(range: string): boolean {
+  return /(^|(?:\.\.))@(?=(\.\.)|$)/.test(range);
+}
+
 function getGitArgsForRange(range: string): string[] {
   const gitRange = translateJjToGitRange(range);
 
@@ -170,6 +174,94 @@ function getGitArgsForRange(range: string): string[] {
   return ["show", "--format=", "--patch", gitRange];
 }
 
+export function normalizeDiff(diff: string | null): string | null {
+  if (!diff || diff.trim().length === 0) {
+    return null;
+  }
+  return diff.trimEnd() + "\n";
+}
+
+export function extractDiffFilePaths(diff: string | null): Set<string> {
+  const paths = new Set<string>();
+  if (!diff) return paths;
+
+  for (const line of diff.split("\n")) {
+    const match = line.match(/^diff --git a\/.+ b\/(.+)$/);
+    if (match) {
+      paths.add(match[1]!);
+    }
+  }
+
+  return paths;
+}
+
+// Even when jj succeeds, we still scan for untracked files via `git ls-files --others`.
+// jj-managed repos can have files that are gitignored but not jj-ignored (or vice versa),
+// so jj's diff may miss files that git considers untracked. The deduplication via
+// extractDiffFilePaths ensures we only append entries not already covered.
+async function appendMissingUntrackedDiffs(
+  pi: {
+    exec(
+      command: string,
+      args?: string[],
+      options?: { timeout?: number; cwd?: string },
+    ): Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>;
+  },
+  execOptions: { timeout?: number; cwd?: string },
+  diff: string | null,
+): Promise<string | null> {
+  const untrackedListResult = await pi.exec(
+    "git",
+    ["ls-files", "--others", "--exclude-standard", "-z"],
+    execOptions,
+  ).catch(() => ({ code: 1, stdout: "", stderr: "", killed: false }));
+
+  const baseDiff = normalizeDiff(diff);
+  if (untrackedListResult.code !== 0 || untrackedListResult.stdout.length === 0) {
+    return baseDiff;
+  }
+
+  const existingPaths = extractDiffFilePaths(baseDiff);
+  const untrackedPaths = untrackedListResult.stdout
+    .split("\0")
+    .filter(Boolean)
+    .filter((filePath) => !existingPaths.has(filePath))
+    .filter((filePath) => filePath.length > 0 && !/[\x00\n\r]/.test(filePath));
+
+  if (untrackedPaths.length === 0) {
+    return baseDiff;
+  }
+
+  const CONCURRENCY_LIMIT = 10;
+  const appendedSections: string[] = [];
+  for (let i = 0; i < untrackedPaths.length; i += CONCURRENCY_LIMIT) {
+    const batch = untrackedPaths.slice(i, i + CONCURRENCY_LIMIT);
+    const results = await Promise.all(
+      batch.map((filePath) =>
+        pi.exec(
+          "git",
+          ["diff", "--no-index", "--", "/dev/null", filePath],
+          execOptions,
+        ).catch(() => ({ code: 2 as number, stdout: "", stderr: "", killed: false }))
+      ),
+    );
+    for (const result of results) {
+      if (result.code !== 0 && result.code !== 1) continue;
+      const normalizedSection = normalizeDiff(result.stdout);
+      if (normalizedSection) {
+        appendedSections.push(normalizedSection.trimEnd());
+      }
+    }
+  }
+
+  if (appendedSections.length === 0) {
+    return baseDiff;
+  }
+
+  const sections = [baseDiff?.trimEnd(), ...appendedSections].filter(Boolean);
+  return sections.length > 0 ? sections.join("\n") + "\n" : null;
+}
+
 /**
  * Gather diff text for a revision range.
  *
@@ -177,6 +269,7 @@ function getGitArgsForRange(range: string): string[] {
  * 1) Validate the range string
  * 2) Try jj (`jj diff -r <range> --git`)
  * 3) If jj fails, fall back to git
+ * 4) When reviewing the working copy (`@`), append missing untracked-file diffs
  */
 export async function gatherRangeDiff(
   pi: {
@@ -212,12 +305,18 @@ export async function gatherRangeDiff(
   ]);
 
   if (jjResult.code === 0) {
-    const diff = jjResult.stdout.trim().length > 0 ? jjResult.stdout : null;
+    const baseDiff = normalizeDiff(jjResult.stdout);
+    const diff = rangeIncludesWorkingCopy(range)
+      ? await appendMissingUntrackedDiffs(pi, execOptions, baseDiff)
+      : baseDiff;
     return { diff, source: "jj" };
   }
 
   if (gitResult.code === 0) {
-    const diff = gitResult.stdout.trim().length > 0 ? gitResult.stdout : null;
+    const baseDiff = normalizeDiff(gitResult.stdout);
+    const diff = rangeIncludesWorkingCopy(range)
+      ? await appendMissingUntrackedDiffs(pi, execOptions, baseDiff)
+      : baseDiff;
     return { diff, source: "git" };
   }
 
