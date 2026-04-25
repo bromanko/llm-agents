@@ -10,9 +10,9 @@ import {
 } from "../../pi/jj/extensions/jj-commit.ts";
 
 const model = {
-  provider: "anthropic",
-  id: "claude-sonnet-4-6-20260301",
-  name: "Claude Sonnet 4.6",
+  provider: "openai-codex",
+  id: "gpt-5.4-mini",
+  name: "GPT-5.4 mini",
 };
 
 beforeEach(() => {
@@ -353,7 +353,7 @@ test("runModelInference: passes resolved model, prompt message, and options", as
     apiKey: "forwarded-key",
     headers: undefined,
     maxTokens: 2048,
-    temperature: 0.2,
+    reasoning: "low",
   });
 });
 
@@ -404,7 +404,7 @@ test("runModelInference: resolves completion via importer fallback when injector
     apiKey: "fallback-key",
     headers: undefined,
     maxTokens: 2048,
-    temperature: 0.2,
+    reasoning: "low",
   });
 });
 
@@ -506,7 +506,7 @@ test("runModelInference: falls back to active session model when registry lookup
     apiKey: undefined,
     headers: undefined,
     maxTokens: 2048,
-    temperature: 0.2,
+    reasoning: "low",
   });
 });
 
@@ -544,7 +544,7 @@ test("runModelInference: allows undefined apiKey and still completes", async () 
     apiKey: undefined,
     headers: undefined,
     maxTokens: 2048,
-    temperature: 0.2,
+    reasoning: "low",
   });
 });
 
@@ -579,7 +579,7 @@ test("runModelInference: normalizes blank apiKey to undefined", async () => {
     apiKey: undefined,
     headers: undefined,
     maxTokens: 2048,
-    temperature: 0.2,
+    reasoning: "low",
   });
 });
 

@@ -2,8 +2,8 @@
  * /jj-commit — agentic commit workflow for jujutsu repositories.
  *
  * Analyzes working-copy changes, generates conventional commit messages using
- * a model (preferred: Sonnet 4.6, fallback: session model),
- * optionally splits unrelated changes into multiple commits, updates existing
+ * a model (configured model, then OpenAI Codex GPT-5.4 mini with low thinking,
+ * then the session model), optionally splits unrelated changes, updates existing
  * changelogs, and can push via bookmark.
  *
  * Flags:

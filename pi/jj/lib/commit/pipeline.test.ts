@@ -64,9 +64,9 @@ function createMockJj(opts: MockJjOptions = {}) {
 }
 
 const sessionModel: ModelCandidate = {
-  provider: "anthropic",
-  id: "claude-sonnet-4-6-20260301",
-  name: "Claude Sonnet 4.6",
+  provider: "openai-codex",
+  id: "gpt-5.4-mini",
+  name: "GPT-5.4 mini",
 };
 
 function createBasicContext(overrides: Partial<PipelineContext> = {}): PipelineContext {

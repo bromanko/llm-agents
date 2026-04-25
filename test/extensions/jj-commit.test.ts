@@ -176,10 +176,10 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
     },
   } as any;
 
-  const sonnetModel = {
-    provider: "anthropic",
-    id: "claude-sonnet-4-6-20260301",
-    name: "Claude Sonnet 4.6",
+  const preferredModel = {
+    provider: "openai-codex",
+    id: "gpt-5.4-mini",
+    name: "GPT-5.4 mini",
   };
 
   const otherModel = {
@@ -190,7 +190,7 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
 
   let getAllCalls = 0;
   const apiKeyCalls: Array<{ provider: string; id: string }> = [];
-  const allModels = [sonnetModel, otherModel];
+  const allModels = [preferredModel, otherModel];
 
   registerJjCommitCommand(pi, {
     isJjRepo: () => true,
@@ -199,10 +199,10 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
       constructor(_cwd: string) { }
     } as any,
     runCommitPipeline: async (pipelineCtx: any) => {
-      assert.deepStrictEqual(pipelineCtx.availableModels, [sonnetModel, otherModel]);
+      assert.deepStrictEqual(pipelineCtx.availableModels, [preferredModel, otherModel]);
 
-      assert.equal(await pipelineCtx.hasApiKey(sonnetModel), true);
-      assert.equal(await pipelineCtx.hasApiKey(sonnetModel), true);
+      assert.equal(await pipelineCtx.hasApiKey(preferredModel), true);
+      assert.equal(await pipelineCtx.hasApiKey(preferredModel), true);
       assert.equal(
         await pipelineCtx.hasApiKey({ provider: "missing", id: "missing", name: "Missing" }),
         false,
@@ -239,7 +239,7 @@ test("jj-commit handler: reuses one registry snapshot and memoizes API key looku
 
   assert.equal(getAllCalls, 1);
   assert.deepStrictEqual(apiKeyCalls, [
-    { provider: "anthropic", id: "claude-sonnet-4-6-20260301" },
+    { provider: "openai-codex", id: "gpt-5.4-mini" },
   ]);
 });
 
@@ -256,9 +256,9 @@ test("jj-commit handler: OAuth session model is considered available without an 
   } as any;
 
   const sessionModel = {
-    provider: "google",
-    id: "claude-sonnet-4-6-20260301",
-    name: "Claude Sonnet 4.6 (via OAuth)",
+    provider: "openai-codex",
+    id: "gpt-5.4-mini",
+    name: "GPT-5.4 mini (via OAuth)",
   };
 
   const allModels = [sessionModel];

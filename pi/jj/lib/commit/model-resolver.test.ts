@@ -3,10 +3,15 @@ import assert from "node:assert/strict";
 import { resolveCommitModel } from "./model-resolver.ts";
 import type { ModelCandidate } from "./model-resolver.ts";
 
-const sonnet46: ModelCandidate = {
-  provider: "anthropic",
-  id: "claude-sonnet-4-6-20260301",
-  name: "Claude Sonnet 4.6",
+const preferredCommitModel: ModelCandidate = {
+  provider: "openai-codex",
+  id: "gpt-5.4-mini",
+  name: "GPT-5.4 mini",
+};
+
+const preferredCommitModelWithThinking: ModelCandidate = {
+  ...preferredCommitModel,
+  thinkingLevel: "low",
 };
 
 const sessionModel: ModelCandidate = {
@@ -29,7 +34,7 @@ test("resolveCommitModel: prefers configured model over built-in preferred and s
   };
 
   const result = await resolveCommitModel({
-    availableModels: [otherModel, sonnet46, sessionModel, configuredModel],
+    availableModels: [otherModel, preferredCommitModel, sessionModel, configuredModel],
     configuredModel,
     sessionModel,
     hasApiKey: async (m) => m.id === configuredModel.id,
@@ -39,18 +44,18 @@ test("resolveCommitModel: prefers configured model over built-in preferred and s
   assert.equal(result.warnings.length, 0);
 });
 
-test("resolveCommitModel: prefers Sonnet 4.6 when available with API key", async () => {
+test("resolveCommitModel: prefers GPT-5.4 mini with low thinking when available with API key", async () => {
   const result = await resolveCommitModel({
-    availableModels: [otherModel, sonnet46, sessionModel],
+    availableModels: [otherModel, preferredCommitModel, sessionModel],
     sessionModel,
     hasApiKey: async () => true,
   });
 
-  assert.deepStrictEqual(result.model, sonnet46);
+  assert.deepStrictEqual(result.model, preferredCommitModelWithThinking);
   assert.equal(result.warnings.length, 0);
 });
 
-test("resolveCommitModel: falls back to session model when Sonnet 4.6 not in registry", async () => {
+test("resolveCommitModel: falls back to session model when GPT-5.4 mini is not in registry", async () => {
   const result = await resolveCommitModel({
     availableModels: [otherModel, sessionModel],
     sessionModel,
@@ -62,11 +67,11 @@ test("resolveCommitModel: falls back to session model when Sonnet 4.6 not in reg
   assert.ok(result.warnings[0].includes("not found in registry"));
 });
 
-test("resolveCommitModel: falls back to session model when Sonnet 4.6 has no API key", async () => {
+test("resolveCommitModel: falls back to session model when GPT-5.4 mini has no API key", async () => {
   const result = await resolveCommitModel({
-    availableModels: [sonnet46, sessionModel],
+    availableModels: [preferredCommitModel, sessionModel],
     sessionModel,
-    hasApiKey: async (m) => m.id !== sonnet46.id,
+    hasApiKey: async (m) => m.id !== preferredCommitModel.id,
   });
 
   assert.deepStrictEqual(result.model, sessionModel);
@@ -77,7 +82,7 @@ test("resolveCommitModel: falls back to session model when Sonnet 4.6 has no API
 
 test("resolveCommitModel: returns null when both preferred and session model fail", async () => {
   const result = await resolveCommitModel({
-    availableModels: [sonnet46],
+    availableModels: [preferredCommitModel],
     sessionModel,
     hasApiKey: async () => false,
   });
@@ -109,7 +114,7 @@ test("resolveCommitModel: allows configured openai-codex models when auth is ava
   };
 
   const result = await resolveCommitModel({
-    availableModels: [sonnet46, sessionModel, codexModel],
+    availableModels: [preferredCommitModel, sessionModel, codexModel],
     configuredModel: codexModel,
     sessionModel,
     hasApiKey: async (m) => m.id === codexModel.id,
@@ -136,11 +141,11 @@ test("resolveCommitModel: falls back to an openai-codex session model when prefe
   assert.ok(result.warnings.some((w) => w.includes("not found in registry")));
 });
 
-test("resolveCommitModel: matches any Sonnet 4.6 variant ID", async () => {
+test("resolveCommitModel: does not match other GPT-5.4 variants", async () => {
   const variant: ModelCandidate = {
-    provider: "anthropic",
-    id: "claude-sonnet-4-6-20260515",
-    name: "Claude Sonnet 4.6 (May)",
+    provider: "openai-codex",
+    id: "gpt-5.4",
+    name: "GPT-5.4",
   };
 
   const result = await resolveCommitModel({
@@ -149,6 +154,7 @@ test("resolveCommitModel: matches any Sonnet 4.6 variant ID", async () => {
     hasApiKey: async () => true,
   });
 
-  assert.deepStrictEqual(result.model, variant);
-  assert.equal(result.warnings.length, 0);
+  assert.deepStrictEqual(result.model, sessionModel);
+  assert.equal(result.warnings.length, 1);
+  assert.ok(result.warnings[0].includes("gpt-5.4-mini"));
 });

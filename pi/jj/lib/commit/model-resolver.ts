@@ -3,15 +3,18 @@
  *
  * Preferred order:
  *   1. Configured model from jj-commit settings
- *   2. Sonnet 4.6 (anthropic/claude-sonnet-4-6-*)
+ *   2. GPT-5.4 mini via OpenAI Codex with low thinking
  *   3. Current session model
  *   4. Null (caller reports failure)
  */
+
+export type CommitThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface ModelCandidate {
   provider: string;
   id: string;
   name: string;
+  thinkingLevel?: CommitThinkingLevel;
 }
 
 export interface ModelResolverInput {
@@ -30,8 +33,9 @@ export interface ModelResolverResult {
   warnings: string[];
 }
 
-const PREFERRED_MODEL_PATTERN = /^claude-sonnet-4-6/;
-const PREFERRED_PROVIDER = "anthropic";
+const PREFERRED_MODEL_ID = "gpt-5.4-mini";
+const PREFERRED_PROVIDER = "openai-codex";
+const PREFERRED_THINKING_LEVEL: CommitThinkingLevel = "low";
 
 const INCOMPATIBLE_PROVIDERS = new Set([
   // openai-codex works via pi-ai's complete() path, so allow it for jj-commit.
@@ -65,21 +69,25 @@ export async function resolveCommitModel(
   const preferred = input.availableModels.find(
     (m) =>
       m.provider === PREFERRED_PROVIDER
-      && PREFERRED_MODEL_PATTERN.test(m.id)
+      && m.id === PREFERRED_MODEL_ID
       && isCompatibleProvider(m),
   );
 
   if (preferred) {
-    const hasKey = await input.hasApiKey(preferred);
+    const preferredWithThinking = {
+      ...preferred,
+      thinkingLevel: PREFERRED_THINKING_LEVEL,
+    };
+    const hasKey = await input.hasApiKey(preferredWithThinking);
     if (hasKey) {
-      return { model: preferred, warnings };
+      return { model: preferredWithThinking, warnings };
     }
     warnings.push(
       `Preferred model ${preferred.provider}/${preferred.id} has no API key; falling back to session model.`,
     );
   } else {
     warnings.push(
-      "Preferred model (Sonnet 4.6) not found in registry; falling back to session model.",
+      "Preferred model (openai-codex/gpt-5.4-mini) not found in registry; falling back to session model.",
     );
   }
 

@@ -30,9 +30,9 @@ const {
 // ---------------------------------------------------------------------------
 
 const defaultModel: ModelCandidate = {
-  provider: "anthropic",
-  id: "claude-sonnet-4-6-20260301",
-  name: "Claude Sonnet 4.6",
+  provider: "openai-codex",
+  id: "gpt-5.4-mini",
+  name: "GPT-5.4 mini",
 };
 
 function mockCompleteFn(text: string): CompleteFn {
@@ -415,7 +415,7 @@ test("runModelInference: uses getAll fallback when find returns undefined", asyn
       modelRegistry: {
         find: () => undefined,
         getAll: () => [
-          { provider: "anthropic", id: "claude-sonnet-4-6-20260301", name: "test" },
+          { provider: "openai-codex", id: "gpt-5.4-mini", name: "test" },
         ],
         getApiKey: async () => "key",
       },
@@ -538,6 +538,7 @@ test("runModelInference: proceeds without API key when getApiKey throws", async 
     assert.equal(result, responseText);
     assert.equal(capturedOptions?.apiKey, undefined);
     assert.equal(capturedOptions?.headers, undefined);
+    assert.equal(capturedOptions?.reasoning, "low");
   } finally {
     setCompleteFn(undefined);
   }
@@ -573,6 +574,7 @@ test("runModelInference: forwards auth headers for providers like openai-codex",
       apiKey: undefined,
       headers: { Authorization: "Bearer jwt-token" },
       maxTokens: 2048,
+      reasoning: "low",
     });
   } finally {
     setCompleteFn(undefined);
@@ -612,6 +614,7 @@ test("buildCompleteOptions: omits temperature for openai-codex", () => {
     apiKey: undefined,
     headers: { Authorization: "Bearer token" },
     maxTokens: 2048,
+    reasoning: "low",
   });
 });
 

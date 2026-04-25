@@ -14,11 +14,14 @@ export type CompletionBlock =
   | { type: "text"; text?: string }
   | { type: string;[key: string]: unknown };
 
+export type CompleteReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export type CompleteOptions = {
   apiKey?: string;
   headers?: Record<string, string>;
   maxTokens?: number;
   temperature?: number;
+  reasoning?: CompleteReasoningLevel;
 };
 
 export interface ModelRegistryForInference {
@@ -41,6 +44,7 @@ export interface ModelCandidate {
   provider: string;
   id: string;
   name?: string;
+  thinkingLevel?: CompleteReasoningLevel;
 }
 
 /** Result of resolving a model object from registry or session. */
@@ -267,15 +271,15 @@ export async function hasModelAuth(
       const auth = await modelRegistry.getApiKeyAndHeaders(registryModel);
       if (auth && auth.ok) {
         // ok: true is authoritative — check if credentials are present
-        const hasKey = typeof auth.apiKey === "string" && auth.apiKey !== "";
-        const hasHeaders = auth.headers != null && Object.keys(auth.headers).length > 0;
+        const hasKey = typeof auth.apiKey === "string" && auth.apiKey.trim().length > 0;
+        const hasHeaders = sanitizeAuthHeaders(auth.headers) !== undefined;
         return hasKey || hasHeaders;
       }
       // ok: false — fall through to legacy getApiKey
     }
 
     const apiKey = await modelRegistry.getApiKey(registryModel);
-    return apiKey !== undefined && apiKey !== null && apiKey !== "";
+    return typeof apiKey === "string" && apiKey.trim().length > 0;
   } catch {
     return false;
   }

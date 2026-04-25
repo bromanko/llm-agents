@@ -134,7 +134,11 @@ function buildCompleteOptions(
   model: ModelCandidate,
   auth: { apiKey?: string; headers?: Record<string, string> },
 ): CompleteOptions {
-  return buildCompleteOptionsBase(model, auth, JJ_MAX_TOKENS);
+  const options = buildCompleteOptionsBase(model, auth, JJ_MAX_TOKENS);
+  const reasoning = model.thinkingLevel
+    ?? (model.provider === "openai-codex" ? "low" : undefined);
+  if (reasoning) options.reasoning = reasoning;
+  return options;
 }
 
 // ---------------------------------------------------------------------------

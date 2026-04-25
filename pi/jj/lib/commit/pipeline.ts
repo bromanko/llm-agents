@@ -2,7 +2,7 @@
  * Pipeline orchestration for jj-commit.
  *
  * This module coordinates:
- * 1. Model resolution (preferred Sonnet 4.6 → session model)
+ * 1. Model resolution (configured model → GPT-5.4 mini low-thinking → session model)
  * 2. Optional jj absorb pre-pass
  * 3. Agentic commit analysis
  * 4. Changelog detection and application
