@@ -365,6 +365,50 @@ test("notify is a no-op after destroy", async () => {
   await assert.rejects(() => outgoing.nextMessage(50), /Timed out waiting for frame/);
 });
 
+test("closed transport makes notifications safe and requests reject", async () => {
+  const { serverIn, serverOut } = createMockStdio();
+  const outgoing = createFrameReader(serverIn);
+  const client = createLspClient(serverIn, serverOut);
+
+  serverOut.end();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(client.isClosed?.(), true);
+  assert.doesNotThrow(() => client.notify("textDocument/didSave", {
+    textDocument: { uri: "file:///test.ts" },
+  }));
+
+  await assert.rejects(
+    () => client.request("textDocument/hover", {}, 50),
+    (error: Error) => {
+      assert.match(error.message, /closed/i);
+      return true;
+    },
+  );
+  await assert.rejects(() => outgoing.nextMessage(50), /Timed out waiting for frame/);
+
+  client.destroy();
+});
+
+test("already-aborted requests are not sent", async () => {
+  const { serverIn, serverOut } = createMockStdio();
+  const outgoing = createFrameReader(serverIn);
+  const client = createLspClient(serverIn, serverOut);
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => client.request("textDocument/hover", {}, 5000, controller.signal),
+    (error: Error) => {
+      assert.match(error.message, /abort/i);
+      return true;
+    },
+  );
+  await assert.rejects(() => outgoing.nextMessage(50), /Timed out waiting for frame/);
+
+  client.destroy();
+});
+
 test("1-index to 0-index position conversion helper", () => {
   const pos = toLspPosition(10, 5);
   assert.equal(pos.line, 9);

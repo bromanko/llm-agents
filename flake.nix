@@ -36,6 +36,7 @@
         default = pkgs.mkShell {
           packages = [
             pkgs.selfci
+            pkgs.nodejs_24
 
             # LSP servers
             pkgs.typescript-language-server
@@ -51,6 +52,7 @@
         lsp-test = pkgs.mkShell {
           packages = [
             pkgs.selfci
+            pkgs.nodejs_24
             pkgs.typescript-language-server
             pkgs.typescript
           ];

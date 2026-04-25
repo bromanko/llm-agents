@@ -396,6 +396,82 @@ test("getRunningServerForFile returns the correct root-scoped server", async () 
   }
 });
 
+test("ensureServerForFile replaces a closed running client", async () => {
+  const { tmpDir, cleanup } = createTmpProject({
+    "package.json": "{}",
+    "src/index.ts": "export const value = 1;",
+  });
+
+  try {
+    const clients: Array<LspClient & { closeForTest(): void }> = [];
+    const events: string[] = [];
+    const manager = createServerManager(makeConfig({
+      servers: [
+        {
+          name: "typescript-language-server",
+          command: "node",
+          args: [],
+          fileTypes: [".ts"],
+          rootMarkers: ["package.json"],
+        },
+      ],
+    }), tmpDir, {
+      spawnProcess: async () => ({
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+      }),
+      createClient: () => {
+        const id = clients.length + 1;
+        let closed = false;
+        const client: LspClient & { closeForTest(): void } = {
+          async request(method: string): Promise<unknown> {
+            events.push(`${id}:request:${method}`);
+            return method === "initialize" || method === "shutdown" ? null : {};
+          },
+          notify(method: string): void {
+            events.push(`${id}:notify:${method}`);
+          },
+          onDiagnostics(): void {
+            // No-op.
+          },
+          onNotification(): void {
+            // No-op.
+          },
+          onRequest(): void {
+            events.push(`${id}:onRequest`);
+          },
+          isClosed(): boolean {
+            return closed;
+          },
+          destroy(): void {
+            events.push(`${id}:destroy`);
+          },
+          closeForTest(): void {
+            closed = true;
+          },
+        };
+        clients.push(client);
+        return client;
+      },
+    });
+    await manager.detectServers();
+
+    const filePath = path.join(tmpDir, "src", "index.ts");
+    const first = await manager.ensureServerForFile(filePath);
+    clients[0]?.closeForTest();
+    const second = await manager.ensureServerForFile(filePath);
+
+    assert.ok(first);
+    assert.ok(second);
+    assert.notEqual(first?.client, second?.client);
+    assert.equal(clients.length, 2);
+    assert.equal(manager.getRunningServerForFile(filePath)?.client, second?.client);
+    assert.ok(events.includes("1:destroy"), "closed client should be destroyed before replacement");
+  } finally {
+    cleanup();
+  }
+});
+
 test("syncDocumentContent opens once and changes on subsequent updates", async () => {
   const { tmpDir, cleanup } = createTmpProject({
     "package.json": "{}",

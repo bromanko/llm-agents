@@ -317,7 +317,13 @@ export function createServerManager(
       if (!target) return null;
 
       const existing = running.get(target.key);
-      if (existing) return touch(existing);
+      if (existing) {
+        if (existing.client?.isClosed?.()) {
+          await shutdownServer(target.key, existing);
+        } else {
+          return touch(existing);
+        }
+      }
 
       if (options.dryRun) {
         const managed: ManagedServer = {
