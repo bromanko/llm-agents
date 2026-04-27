@@ -1,0 +1,34 @@
+formula = "work-spike"
+description = "Run the smallest reversible experiment needed to answer a work question."
+version = 1
+
+[[steps]]
+id = "state-unknown"
+title = "State the unknown"
+description = """
+For target path {{target_path}}, state the question exactly: {{question}}. Define what observation would answer it and what result would cause the team to change direction.
+"""
+
+[[steps]]
+id = "experiment"
+title = "Run the smallest experiment"
+description = """
+Run the smallest reversible experiment that can answer {{question}}. Keep code, generated files, and notes inside {{target_path}} unless the source task explicitly grants broader scope.
+"""
+needs = ["state-unknown"]
+
+[[steps]]
+id = "record-evidence"
+title = "Record evidence"
+description = """
+Record the command, observation, source, or diff that answered the question. Distinguish facts from guesses and note any limitations.
+"""
+needs = ["experiment"]
+
+[[steps]]
+id = "recommend-route"
+title = "Recommend next route"
+description = """
+Recommend whether to proceed, change direction, defer, or discard the spike. If the result creates durable direction, recommend the decision record, roadmap, scope brief, or execution plan update needed next.
+"""
+needs = ["record-evidence"]

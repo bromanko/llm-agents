@@ -1,0 +1,69 @@
+formula = "parallel-implementation-batch"
+description = "Plan and coordinate multiple workspace-backed implementation slices that can proceed in parallel and integrate one at a time."
+version = 1
+
+[[steps]]
+id = "confirm-batch-scope"
+title = "Confirm batch scope for {{batch_title}}"
+description = """
+For target path {{target_path}}, confirm that {{batch_title}} has accepted scope, a clear batch goal, and enough route information to split into workstreams without changing product or architecture decisions.
+
+Batch goal:
+{{batch_goal}}
+"""
+
+[[steps]]
+id = "partition-workstreams"
+title = "Partition workstreams for {{batch_title}}"
+description = """
+Split the batch into independently reviewable implementation slices. Each workstream should have a bounded title, expected file or target-area ownership, verification command or manual check, and an explicit note about likely overlap with other workstreams.
+"""
+needs = ["confirm-batch-scope"]
+
+[[steps]]
+id = "assign-workspaces"
+title = "Assign workspace names for {{batch_title}}"
+description = """
+Assign a stable jj workspace name to each workstream. Use descriptive names that are unique in /ws-list. Low-level lifecycle commands such as /ws-create, /ws-list, /ws-switch, and /ws-finish are provided by the user's existing workspace extension; do not implement duplicate commands in this repository.
+"""
+needs = ["partition-workstreams"]
+
+[[steps]]
+id = "launch-workstream-slices"
+title = "Launch workspace implementation slices"
+description = """
+Create or route one task per workstream through the workspace-implementation-slice formula, passing target_path, slice_title, and workspace_name for each slice. Gas City formulas do not dynamically create one step per workstream, so the lead must make separate tasks and preserve the mapping from workstream to workspace.
+"""
+needs = ["assign-workspaces"]
+
+[[steps]]
+id = "track-workstream-readiness"
+title = "Track workstream readiness"
+description = """
+Track each workspace-local implementation, verification, and review gate. Do not mark a workstream ready for integration until the workspace-local reviewer states it is ready and the workspace status is understood.
+"""
+needs = ["launch-workstream-slices"]
+
+[[steps]]
+id = "sequence-integrations"
+title = "Sequence default-workspace integrations"
+description = """
+Choose the integration order for ready workspaces. Integrate workspaces into the default workspace one at a time unless the human explicitly directs otherwise. Before each /ws-finish or equivalent source-control operation, confirm human integration approval or prior delegation, confirm the default workspace is clean and expected, and record the validation to rerun from default. After a non-empty integration, do not finish another workspace until default validation has run and the human-owned source-control step has recorded or advanced the integrated state.
+"""
+needs = ["track-workstream-readiness"]
+
+[[steps]]
+id = "run-integration-verification"
+title = "Run integration verification for {{batch_title}}"
+description = """
+After each workspace is integrated, rerun the relevant validation from the default workspace and record the exact command and result. If validation fails, stop the batch and route the failure to the smallest workstream or integration step that can resolve it before integrating more work.
+"""
+needs = ["sequence-integrations"]
+
+[[steps]]
+id = "human-batch-acceptance"
+title = "Human batch acceptance for {{batch_title}}"
+description = """
+Summarize all workstreams, workspace-local review results, integration order, default-workspace validation evidence, cleanup status, and remaining risks. The human owns final batch acceptance and source-control commit or merge unless explicitly delegated.
+"""
+needs = ["run-integration-verification"]

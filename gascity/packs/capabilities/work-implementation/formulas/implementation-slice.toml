@@ -1,0 +1,50 @@
+formula = "implementation-slice"
+description = "Implement, verify, review, and request acceptance for a bounded work slice that has passed required gates."
+version = 1
+
+[[steps]]
+id = "confirm-gates"
+title = "Confirm gates for {{slice_title}}"
+description = """
+For target path {{target_path}}, confirm that {{slice_title}} has enough accepted scope to implement. If architecture, execution-plan, or task-breakdown gates are required by the scope brief, confirm they have passed before continuing.
+"""
+
+[[steps]]
+id = "task-design"
+title = "Design the implementation task"
+description = """
+Name the minimal files or target areas expected to change and the verification command or manual check that will prove the slice works. Keep the design within the accepted scope.
+"""
+needs = ["confirm-gates"]
+
+[[steps]]
+id = "implement"
+title = "Implement {{slice_title}}"
+description = """
+Implement only the accepted slice inside {{target_path}}. Do not refactor unrelated code, add speculative abstractions, or make new product or architecture decisions while implementing.
+"""
+needs = ["task-design"]
+
+[[steps]]
+id = "verification-gate"
+title = "Verification gate"
+description = """
+Run the verification command or manual check named during task design. Record the exact command, result, and any failures. Failed verification blocks review acceptance until fixed or explicitly waived by a human.
+"""
+needs = ["implement"]
+
+[[steps]]
+id = "review-gate"
+title = "Review gate"
+description = """
+Review the diff for scope, correctness, maintainability, verification evidence, and durable memory updates. Report required fixes before human acceptance.
+"""
+needs = ["verification-gate"]
+
+[[steps]]
+id = "human-acceptance"
+title = "Human acceptance for {{slice_title}}"
+description = """
+Summarize what changed, which gates passed, what remains risky, and whether release readiness is needed. The human owns final acceptance and source-control commit or merge unless explicitly delegated.
+"""
+needs = ["review-gate"]
