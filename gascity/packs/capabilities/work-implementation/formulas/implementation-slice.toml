@@ -13,7 +13,7 @@ For target path {{target_path}}, confirm that {{slice_title}} has enough accepte
 id = "task-design"
 title = "Design the implementation task"
 description = """
-Name the minimal files or target areas expected to change and the verification command or manual check that will prove the slice works. Keep the design within the accepted scope.
+Name the minimal files or target areas expected to change and the verification command or manual check that will prove the slice works. Keep the design within the accepted scope. State source-control authority explicitly: no commits, local checkpoint commits allowed, or integration/finish delegated. Identify where progress updates will be recorded.
 """
 needs = ["confirm-gates"]
 
@@ -21,7 +21,7 @@ needs = ["confirm-gates"]
 id = "implement"
 title = "Implement {{slice_title}}"
 description = """
-Implement only the accepted slice inside {{target_path}}. Do not refactor unrelated code, add speculative abstractions, or make new product or architecture decisions while implementing.
+Implement only the accepted slice inside {{target_path}}. Do not refactor unrelated code, add speculative abstractions, or make new product or architecture decisions while implementing. If checkpoint commits are delegated, commit coherent in-progress work at task or gate boundaries and record the hash on the source task.
 """
 needs = ["task-design"]
 
@@ -29,7 +29,7 @@ needs = ["task-design"]
 id = "verification-gate"
 title = "Verification gate"
 description = """
-Run the verification command or manual check named during task design. Record the exact command, result, and any failures. Failed verification blocks review acceptance until fixed or explicitly waived by a human.
+Run the verification command or manual check named during task design. Record the exact command, result, and any failures on the source task, and use the consuming repository's attention channel for review-ready or blocked status when prompt attention is needed. Failed verification blocks review acceptance until fixed or explicitly waived by a human.
 """
 needs = ["implement"]
 
@@ -45,6 +45,6 @@ needs = ["verification-gate"]
 id = "human-acceptance"
 title = "Human acceptance for {{slice_title}}"
 description = """
-Summarize what changed, which gates passed, what remains risky, and whether release readiness is needed. The human owns final acceptance and source-control commit or merge unless explicitly delegated.
+Summarize what changed, which gates passed, any checkpoint commit hashes, what remains risky, and whether release readiness is needed. The human owns final acceptance and source-control integration or merge unless explicitly delegated.
 """
 needs = ["review-gate"]

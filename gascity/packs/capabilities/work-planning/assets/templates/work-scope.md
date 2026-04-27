@@ -36,6 +36,12 @@ List behavior, paths, decisions, or integrations that are intentionally out of s
 
 List automated tests, static checks, manual checks, or inspection steps needed before acceptance.
 
+## Execution reporting
+
+- Source-control authority: no commits | local checkpoint commits allowed | integration/finish delegated
+- Progress channel: source task comments/notes, mail/nudge target, or repository-specific handoff path
+- Checkpoint commit guidance, if allowed:
+
 ## Review notes
 
 Capture blocking and non-blocking review findings, plus lead reconciliation.

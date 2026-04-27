@@ -37,7 +37,7 @@ needs = ["enter-workspace"]
 id = "task-design"
 title = "Design the implementation task"
 description = """
-Name the minimal files or target areas expected to change and the verification command or manual check that will prove the slice works. Keep the design within the accepted scope and inside {{target_path}} unless wider scope was explicitly granted.
+Name the minimal files or target areas expected to change and the verification command or manual check that will prove the slice works. Keep the design within the accepted scope and inside {{target_path}} unless wider scope was explicitly granted. State source-control authority explicitly: no commits, workspace-local checkpoint commits allowed, or integration/finish delegated. Identify where progress updates will be recorded.
 """
 needs = ["workspace-preflight"]
 
@@ -45,7 +45,7 @@ needs = ["workspace-preflight"]
 id = "implement"
 title = "Implement {{slice_title}} in {{workspace_name}}"
 description = """
-Implement only the accepted slice inside the workspace. Do not make new product or architecture decisions while implementing. Do not edit the default workspace for this task.
+Implement only the accepted slice inside the workspace. Do not make new product or architecture decisions while implementing. Do not edit the default workspace for this task. If checkpoint commits are delegated, commit coherent workspace-local progress at task or gate boundaries and record the hash on the source task.
 """
 needs = ["task-design"]
 
@@ -53,7 +53,7 @@ needs = ["task-design"]
 id = "workspace-verification"
 title = "Verify {{slice_title}} in {{workspace_name}}"
 description = """
-Run the verification command or manual check named during task design from the workspace. Record the exact command, result, and any failures. Failed verification blocks workspace review acceptance until fixed or explicitly waived by a human.
+Run the verification command or manual check named during task design from the workspace. Record the exact command, result, and any failures on the source task, and use the consuming repository's attention channel for review-ready or blocked status when prompt attention is needed. Failed verification blocks workspace review acceptance until fixed or explicitly waived by a human.
 """
 needs = ["implement"]
 
@@ -69,7 +69,7 @@ needs = ["workspace-verification"]
 id = "integration-request"
 title = "Request integration for {{slice_title}}"
 description = """
-Summarize the workspace changes, verification, review result, and any risks. STOP here unless the human or source task explicitly delegated integration authority. Ask the human or integration owner whether to finish workspace {{workspace_name}} into the default workspace.
+Summarize the workspace changes, verification, review result, checkpoint commit hashes if any, and risks. STOP here unless the human or source task explicitly delegated integration authority. Ask the human or integration owner whether to finish workspace {{workspace_name}} into the default workspace.
 """
 needs = ["workspace-review"]
 
@@ -85,7 +85,7 @@ needs = ["integration-request"]
 id = "default-integration"
 title = "Integrate {{workspace_name}} into default"
 description = """
-From the default workspace, integrate workspace {{workspace_name}} using the canonical workspace finish flow only after the human integration gate passes. Before finishing, confirm both the workstream workspace and the default workspace have no unexpected unsnapshotted changes. If the default workspace still contains uncommitted changes from a previous integration, stop for the human-owned source-control step that records or advances that integration before finishing another workspace. If conflicts occur, stop and resolve them explicitly or route back to the workspace; do not manually delete workspace files.
+From the default workspace, integrate workspace {{workspace_name}} using the canonical workspace finish flow only after the human integration gate passes. Before finishing, confirm both the workstream workspace and the default workspace have no unexpected unsnapshotted changes. If the default workspace still contains uncommitted changes from a previous integration and no checkpoint/commit step was delegated to you, stop for the human-owned source-control step that records or advances that integration before finishing another workspace. If conflicts occur, stop and resolve them explicitly or route back to the workspace; do not manually delete workspace files.
 """
 needs = ["human-integration-gate"]
 
@@ -101,6 +101,6 @@ needs = ["default-integration"]
 id = "cleanup-and-acceptance"
 title = "Clean up and request human acceptance"
 description = """
-Confirm workspace cleanup, summarize what changed after integration, which gates passed, what remains risky, and whether release readiness is needed. The human owns final acceptance and source-control commit or merge unless explicitly delegated.
+Confirm workspace cleanup, summarize what changed after integration, which gates passed, checkpoint commit hashes if any, what remains risky, and whether release readiness is needed. The human owns final acceptance and source-control integration or merge unless explicitly delegated.
 """
 needs = ["integration-verification"]

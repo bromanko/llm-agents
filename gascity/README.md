@@ -38,4 +38,8 @@ Remote import syntax and pinning should be validated against the Gas City versio
 
 Consuming repositories keep their own domain adapters, local operating model, product or platform vocabulary, and source-control authority rules. Shared packs provide neutral work-oriented behavior; consumers decide which formulas and agents to re-export, and whether compatibility adapters are needed for existing local names or variables.
 
+Shared formulas assume source-control authority is explicit. A source task or plan should say whether workers have no commit authority, local checkpoint commit authority, or integration/finish authority. If checkpoint commits are delegated, workers should commit coherent in-progress work at task or gate boundaries and report commit hashes with verification status.
+
+Shared agents should leave durable progress breadcrumbs on the source task and use the consuming repository's attention channel for blockers, review-ready handoffs, checkpoint commits, and human gates. If hook delivery appears broken, agents should record that fact and use an explicit mail/nudge or equivalent fallback rather than staying silent.
+
 Low-level workspace lifecycle commands such as `/ws-create`, `/ws-list`, `/ws-switch`, and `/ws-finish` come from the user's workspace extension. These Gas City packs only describe when and how to use those commands; they do not implement command handlers.
