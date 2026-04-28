@@ -1,0 +1,21 @@
+{
+  "name": "@bromanko/pi-rust-review",
+  "version": "1.0.0",
+  "description": "Rust-specific code review skills for quality, security, performance, and testing",
+  "keywords": [
+    "pi-package"
+  ],
+  "author": {
+    "name": "bromanko",
+    "email": "hello@bromanko.com"
+  },
+  "pi": {
+    "skills": [
+      "../../skills/rust-review",
+      "../../skills/rust-code-review",
+      "../../skills/rust-security-review",
+      "../../skills/rust-performance-review",
+      "../../skills/rust-test-review"
+    ]
+  }
+}

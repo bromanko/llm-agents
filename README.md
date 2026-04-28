@@ -152,6 +152,22 @@ Elm-specific code review skills for quality, security, performance, and testing.
 
 ---
 
+### rust-review
+Rust-specific code review skills for quality, security, performance, and testing.
+
+**Skills:**
+- `code-review` - Quality and idiom analysis for Rust code (ownership, error handling, traits, async)
+- `security-review` - Security audit focusing on unsafe/FFI soundness, input validation, auth, and supply chain
+- `performance-review` - Allocation, async/runtime, data structure, and I/O efficiency analysis
+- `test-review` - Test coverage and quality assessment (unit/integration/doc tests, property tests, fuzzing)
+
+**Installation:**
+```shell
+/plugin install rust-review@bromanko-llm-agents
+```
+
+---
+
 ## Pi `/review` command
 
 The repository includes an interactive code review command in `pi/code-review/extensions/index.ts`.
@@ -162,7 +178,7 @@ The repository includes an interactive code review command in `pi/code-review/ex
 /review <language> [types...] [-r|--revisions <range>] [--fix <high|medium|low|all>] [--report <high|medium|low|all>]
 ```
 
-- `language` selects the review skill family (`gleam`, `fsharp`, `elm`, etc.).
+- `language` selects the review skill family (`gleam`, `fsharp`, `elm`, `rust`, etc.).
 - `types` optionally narrows to `code`, `security`, `performance`, and/or `test`.
 - `-r/--revisions` selects what changes to review. Default is `@`.
 - `--fix` auto-queues follow-up fix requests at or above the given severity threshold.
@@ -176,8 +192,10 @@ The repository includes an interactive code review command in `pi/code-review/ex
 /review gleam code security -r abc123
 /review gleam -r @ --fix high
 /review fsharp test -r main..@ --fix medium
+/review rust code security -r main..@
 pi -p "/review gleam --report all"
 pi -p "/review fsharp security --report medium"
+pi -p "/review rust performance --report all"
 ```
 
 ### Range resolution
