@@ -61,9 +61,15 @@ type FindingAction =
   | { type: "skip" }
   | { type: "stop" };
 
-/** Result from runReviews — includes raw response text for diagnostics */
+/** Result from runReviews — includes parser diagnostics for zero-finding responses. */
 type ReviewResult =
-  | { ok: true; findings: Finding[]; totalResponseLength: number }
+  | {
+    ok: true;
+    findings: Finding[];
+    totalResponseLength: number;
+    /** True when a zero-finding model response looked like malformed finding output. */
+    parseFailureSuspected?: boolean;
+  }
   | { ok: false; cancelled: true }
   | { ok: false; cancelled: false; error: string };
 
@@ -110,6 +116,75 @@ const SEVERITY_ORDER: Record<Finding["severity"], number> = {
 
 function severityRank(s: Finding["severity"]): number {
   return SEVERITY_ORDER[s] ?? 99;
+}
+
+const FINDINGS_SECTION_NONE_PATTERN =
+  /(?:^|\n)\s*#{1,6}\s*findings?\s*\r?\n\s*(?:[-*]\s*)?(?:none|n\/a|no findings?\.?)\s*(?:\r?\n|$)/i;
+
+const NO_FINDINGS_PATTERNS = [
+  /\b(?:no|zero|0)\s+(?:(?:actionable|concrete|exploitable|high[- ]confidence|reportable|security|valid|relevant|high|medium|low|critical|and|or|severity)\s+){0,6}(?:findings?|issues?|problems?|vulnerabilit(?:y|ies)|risks?)\b/,
+  /\bdid(?: not|n't)\s+(?:find|identify|detect)\s+(?:any\s+)?(?:(?:actionable|concrete|exploitable|high[- ]confidence|reportable|security|valid|relevant|high|medium|low|critical|and|or|severity)\s+){0,6}(?:findings?|issues?|problems?|vulnerabilit(?:y|ies)|risks?)\b/,
+  /\b(?:found|identified|detected)\s+(?:no|zero)\s+(?:(?:actionable|concrete|exploitable|high[- ]confidence|reportable|security|valid|relevant|high|medium|low|critical|and|or|severity)\s+){0,6}(?:findings?|issues?|problems?|vulnerabilit(?:y|ies)|risks?)\b/,
+  /\b(?:nothing|none)\s+(?:actionable\s+)?(?:to\s+report|found|identified|detected)\b/,
+];
+
+const REVIEW_FIELD_PATTERN =
+  /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?(?:file|path|location|category|type|issue|problem|risk|suggestion|recommendation|fix|remediation|effort|complexity|severity|priority|title|confidence|exploit\s+scenario)(?:\*\*)?\s*:/i;
+const REVIEW_SEVERITY_PATTERN =
+  /\b(?:HIGH|MEDIUM|LOW|CRITICAL|WARNING|WARN|INFO|SEV[123]|P[0-3])\b/i;
+const FINDING_SECTION_PATTERN =
+  /(?:^|\n)\s*(?:(?:#{1,6}\s*)?findings?\s*:|#{1,6}\s+findings?\b)/i;
+const FINDING_TABLE_HEADER_PATTERN =
+  /(?:^|\n)\s*\|[^\n]*\bseverity\b[^\n]*\|[^\n]*(?:finding|issue|title|file|suggestion)[^\n]*\|/i;
+const FINDING_TABLE_ROW_PATTERN =
+  /(?:^|\n)\s*\|[^\n]*\b(?:HIGH|MEDIUM|LOW|CRITICAL|WARNING|WARN|INFO)\b[^\n]*\|/i;
+const FINDING_LIKE_HEADING_PATTERN =
+  /(?:^|\n)\s*(?:#{1,6}\s*|[-*]\s*)\[?(?:HIGH|MEDIUM|LOW|CRITICAL|WARNING|WARN|INFO|SEV[123]|P[0-3])\]?\b/i;
+
+function normalizeNoFindingsText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[“”]/g, '"')
+    .replace(/[’]/g, "'")
+    .replace(/[,;:()]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function hasExplicitNoFindingsSignal(text: string): boolean {
+  if (FINDINGS_SECTION_NONE_PATTERN.test(text)) {
+    return true;
+  }
+
+  const normalized = normalizeNoFindingsText(text);
+  if (!normalized) return false;
+
+  return NO_FINDINGS_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function looksLikeUnparsedFindingResponse(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (hasExplicitNoFindingsSignal(trimmed)) return false;
+
+  const hasSeverity = REVIEW_SEVERITY_PATTERN.test(trimmed);
+  const hasReviewField = REVIEW_FIELD_PATTERN.test(trimmed);
+  const hasFindingSection = FINDING_SECTION_PATTERN.test(trimmed);
+  const hasFindingLikeHeading = FINDING_LIKE_HEADING_PATTERN.test(trimmed);
+  const hasFindingTable =
+    FINDING_TABLE_HEADER_PATTERN.test(trimmed) && FINDING_TABLE_ROW_PATTERN.test(trimmed);
+
+  return hasFindingTable || (hasSeverity && hasReviewField) ||
+    (hasFindingSection && (hasSeverity || hasReviewField || hasFindingLikeHeading));
+}
+
+function shouldShowParseWarning(reviewResult: Extract<ReviewResult, { ok: true }>): boolean {
+  if (typeof reviewResult.parseFailureSuspected === "boolean") {
+    return reviewResult.parseFailureSuspected;
+  }
+
+  // Compatibility for injected/older review runners that only return length.
+  return reviewResult.totalResponseLength >= MIN_RESPONSE_FOR_SUSPICION;
 }
 
 type ReviewOutputMode = "interactive" | "print" | "json";
@@ -582,11 +657,13 @@ export function registerReviewCommand(
         return;
       }
 
-      const { findings: allFindings, totalResponseLength } = reviewResult;
+      const { findings: allFindings } = reviewResult;
 
       if (allFindings.length === 0) {
+        const parseWarning = shouldShowParseWarning(reviewResult);
+
         if (parsed.options.reportLevel) {
-          if (totalResponseLength >= MIN_RESPONSE_FOR_SUSPICION) {
+          if (parseWarning) {
             reportErrorWriter(REVIEW_PARSE_WARNING);
             return;
           }
@@ -600,7 +677,7 @@ export function registerReviewCommand(
           return;
         }
 
-        if (totalResponseLength >= MIN_RESPONSE_FOR_SUSPICION) {
+        if (parseWarning) {
           notify(REVIEW_PARSE_WARNING, "warning");
         } else {
           notify("No issues found! \u{1F389}", "success");
@@ -821,7 +898,8 @@ export function buildSystemPrompt(
     prompt += existingFindingsSummary + "\n\n";
   }
   prompt +=
-    "IMPORTANT: Output findings in the exact format specified. Each finding MUST start with ### [SEVERITY] on its own line.";
+    "IMPORTANT: Output findings in the exact format specified. Each finding MUST start with ### [SEVERITY] on its own line.\n\n";
+  prompt += "If there are no findings, output exactly:\n## Findings\nNo findings.";
   return prompt;
 }
 
@@ -854,6 +932,7 @@ export async function executeReviewSkills(
 ): Promise<ReviewResult> {
   const findings: Finding[] = [];
   let totalResponseLength = 0;
+  let parseFailureSuspected = false;
   const model = resolveReviewModelObject(ctx);
 
   if (!model) {
@@ -901,10 +980,15 @@ export async function executeReviewSkills(
 
     const responseText = extractResponseText(response.content);
     totalResponseLength += responseText.length;
-    findings.push(...parseFindings(responseText, skill.name));
+
+    const skillFindings = parseFindings(responseText, skill.name);
+    if (skillFindings.length === 0 && looksLikeUnparsedFindingResponse(responseText)) {
+      parseFailureSuspected = true;
+    }
+    findings.push(...skillFindings);
   }
 
-  return { ok: true, findings, totalResponseLength };
+  return { ok: true, findings, totalResponseLength, parseFailureSuspected };
 }
 
 /**

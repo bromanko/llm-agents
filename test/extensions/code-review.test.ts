@@ -9,6 +9,8 @@ import {
   detectReviewOutputMode,
   executeReviewSkills,
   extractResponseText,
+  hasExplicitNoFindingsSignal,
+  looksLikeUnparsedFindingResponse,
   matchesFixThreshold,
   registerReviewCommand,
   resetReviewStdoutStateForTests,
@@ -471,6 +473,7 @@ test("/review gleam --report all with zero findings and large response writes pa
       ok: true,
       findings: [],
       totalResponseLength: 500,
+      parseFailureSuspected: true,
     }),
   });
   ctx.hasUI = false;
@@ -480,6 +483,34 @@ test("/review gleam --report all with zero findings and large response writes pa
   assert.equal(capturedReport, undefined);
   assert.ok(capturedError);
   assert.match(capturedError!, /no findings could be parsed/i);
+});
+
+test("/review gleam --report all treats explicit no-finding responses as a clean empty report", async () => {
+  let capturedReport: string | undefined;
+  let capturedError: string | undefined;
+
+  const { review, ctx } = setupReviewCommand({
+    detectOutputMode: () => "print",
+    reportPresenter: (report) => {
+      capturedReport = report;
+    },
+    reportErrorWriter: (message) => {
+      capturedError = message;
+    },
+    runReviews: async () => ({
+      ok: true,
+      findings: [],
+      totalResponseLength: 500,
+      parseFailureSuspected: false,
+    }),
+  });
+  ctx.hasUI = false;
+
+  await review.handler("gleam --report all", ctx);
+
+  assert.equal(capturedError, undefined);
+  assert.ok(capturedReport);
+  assert.match(capturedReport!, /No findings matched --report all\./);
 });
 
 test("/review gleam --report all in print mode writes fatal setup errors to stderr", async () => {
@@ -781,6 +812,12 @@ test("buildSystemPrompt includes skill content", () => {
   assert.match(prompt, /You are a code reviewer/);
 });
 
+test("buildSystemPrompt tells reviewers to emit an exact no-findings sentinel", () => {
+  const prompt = buildSystemPrompt("Review for null checks.", []);
+  assert.match(prompt, /If there are no findings, output exactly:/);
+  assert.match(prompt, /## Findings\nNo findings\./);
+});
+
 test("buildSystemPrompt includes previous findings context", () => {
   const existing: Finding[] = [
     sampleFinding("HIGH", "existing-issue"),
@@ -819,6 +856,42 @@ test("extractResponseText handles content with no text blocks", () => {
   ];
   const result = extractResponseText(content);
   assert.equal(result, "");
+});
+
+test("hasExplicitNoFindingsSignal recognizes verbose intentional no-finding summaries", () => {
+  assert.equal(hasExplicitNoFindingsSignal("## Findings\nNo findings."), true);
+  assert.equal(
+    hasExplicitNoFindingsSignal(
+      "I reviewed the diff and found no concrete, exploitable security findings above the confidence threshold.",
+    ),
+    true,
+  );
+  assert.equal(
+    hasExplicitNoFindingsSignal("I did not identify any high-confidence vulnerabilities in these changes."),
+    true,
+  );
+  assert.equal(hasExplicitNoFindingsSignal("### [HIGH] Missing auth check"), false);
+});
+
+test("looksLikeUnparsedFindingResponse distinguishes malformed findings from no-finding summaries", () => {
+  assert.equal(
+    looksLikeUnparsedFindingResponse(
+      "## Findings\nNo concrete exploitable findings were identified. Attack surface summary: CLI-only diff.",
+    ),
+    false,
+  );
+  assert.equal(
+    looksLikeUnparsedFindingResponse(
+      "| Severity | Finding | File |\n| --- | --- | --- |\n| HIGH | Auth bypass | src/auth.gleam |",
+    ),
+    true,
+  );
+  assert.equal(
+    looksLikeUnparsedFindingResponse(
+      "Severity: HIGH\nTitle: Missing auth check\nConfidence: 9/10",
+    ),
+    true,
+  );
 });
 
 test("resolveReviewModelObject prefers registry model for object session models", () => {
@@ -1089,6 +1162,39 @@ test("executeReviewSkills calls onSkillStart for each skill", async () => {
     assert.equal(calls.length, 2);
     assert.deepEqual(calls[0], { name: "skill-1", index: 0, total: 2 });
     assert.deepEqual(calls[1], { name: "skill-2", index: 1, total: 2 });
+  } finally {
+    fs.unlinkSync(tmpSkillPath);
+  }
+});
+
+test("executeReviewSkills does not mark long explicit no-finding responses as parse failures", async () => {
+  const tmpSkillPath = "/tmp/test-review-skill-no-findings.md";
+  fs.writeFileSync(tmpSkillPath, "Review carefully.\n");
+  try {
+    const { ctx } = createTestCtx();
+    ctx.model = { provider: "test", id: "test-model", name: "Test" };
+    const skills: ReviewSkill[] = [
+      { name: "skill-1", language: "gleam", type: "security", path: tmpSkillPath },
+    ];
+    const complete = async (
+      _model: unknown,
+      _input: unknown,
+      _options: unknown,
+    ) => ({
+      content: [{
+        type: "text" as const,
+        text: "## Findings\nNo concrete, exploitable security findings were identified in these changes. ".repeat(8),
+      }] as Array<{ type: string; text?: string }>,
+    });
+
+    const result = await executeReviewSkills(ctx, skills, "diff content", complete);
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.findings, []);
+      assert.equal(result.parseFailureSuspected, false);
+      assert.ok(result.totalResponseLength > 200);
+    }
   } finally {
     fs.unlinkSync(tmpSkillPath);
   }
