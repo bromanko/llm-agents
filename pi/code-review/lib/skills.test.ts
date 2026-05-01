@@ -87,6 +87,7 @@ test("getLanguageExtensions returns known extension lists and undefined for unkn
   ]);
   assert.deepEqual(getLanguageExtensions("python"), [".py"]);
   assert.deepEqual(getLanguageExtensions("go"), [".go"]);
+  assert.deepEqual(getLanguageExtensions("rust"), [".rs"]);
   assert.deepEqual(getLanguageExtensions("gleam"), [".gleam"]);
   assert.equal(getLanguageExtensions("unknown-language"), undefined);
 });
@@ -193,20 +194,34 @@ test("filterDiffByExtensions keeps files matching any of several extensions", ()
 });
 
 
-test("filterDiffByExtensions supports python and go file sections", () => {
-  const diff = buildDiff("src/app.py", "cmd/server.go", "README.md");
+test("filterDiffByExtensions supports python, go, and rust file sections", () => {
+  const diff = buildDiff(
+    "src/app.py",
+    "cmd/server.go",
+    "crates/core/src/lib.rs",
+    "README.md",
+  );
 
   const pythonOnly = filterDiffByExtensions(diff, [".py"]);
   assert.ok(pythonOnly, "expected python result");
   assert.match(pythonOnly!, /src\/app\.py/);
   assert.doesNotMatch(pythonOnly!, /cmd\/server\.go/);
+  assert.doesNotMatch(pythonOnly!, /crates\/core\/src\/lib\.rs/);
   assert.doesNotMatch(pythonOnly!, /README\.md/);
 
   const goOnly = filterDiffByExtensions(diff, [".go"]);
   assert.ok(goOnly, "expected go result");
   assert.match(goOnly!, /cmd\/server\.go/);
   assert.doesNotMatch(goOnly!, /src\/app\.py/);
+  assert.doesNotMatch(goOnly!, /crates\/core\/src\/lib\.rs/);
   assert.doesNotMatch(goOnly!, /README\.md/);
+
+  const rustOnly = filterDiffByExtensions(diff, [".rs"]);
+  assert.ok(rustOnly, "expected rust result");
+  assert.match(rustOnly!, /crates\/core\/src\/lib\.rs/);
+  assert.doesNotMatch(rustOnly!, /src\/app\.py/);
+  assert.doesNotMatch(rustOnly!, /cmd\/server\.go/);
+  assert.doesNotMatch(rustOnly!, /README\.md/);
 });
 
 test("discoverReviewSkills finds review skills in a temporary directory", () => {

@@ -90,6 +90,7 @@ const LANGUAGE_EXTENSIONS: Record<string, string[]> = {
   typescript: [".ts", ".tsx", ".mts", ".cts"],
   python: [".py"],
   go: [".go"],
+  rust: [".rs"],
   fsharp: [".fs", ".fsx"],
   gleam: [".gleam"],
   elm: [".elm"],
