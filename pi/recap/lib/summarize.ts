@@ -14,6 +14,16 @@ type SessionEntry = {
   };
 };
 
+type RecapResponse = {
+  content?: unknown;
+  output_text?: unknown;
+  output?: unknown;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 function extractTextParts(content: unknown): string[] {
   if (typeof content === "string") return [content];
   if (!Array.isArray(content)) return [];
@@ -50,6 +60,66 @@ function extractToolCalls(content: unknown): string[] {
     }
   }
   return calls;
+}
+
+function normalizeText(parts: string[]): string | null {
+  const text = parts
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join("\n")
+    .trim();
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * Extract visible text from completion responses produced by multiple pi-ai
+ * provider adapters. Some adapters return `content: [{ type: "text" }]`, while
+ * Codex/Responses-style adapters may return `output_text` or nested
+ * `output[].content[{ type: "output_text" }]` instead.
+ */
+export function extractRecapText(response: RecapResponse | null | undefined): string | null {
+  if (!response) return null;
+
+  if (typeof response.output_text === "string") {
+    const text = normalizeText([response.output_text]);
+    if (text) return text;
+  }
+
+  if (Array.isArray(response.content)) {
+    const parts: string[] = [];
+    for (const part of response.content) {
+      if (!isRecord(part)) continue;
+      const type = part.type;
+      if ((type === "text" || type === "output_text") && typeof part.text === "string") {
+        parts.push(part.text);
+      }
+    }
+    const text = normalizeText(parts);
+    if (text) return text;
+  }
+
+  if (Array.isArray(response.output)) {
+    const parts: string[] = [];
+    for (const item of response.output) {
+      if (!isRecord(item)) continue;
+
+      if (typeof item.output_text === "string") {
+        parts.push(item.output_text);
+      }
+
+      if (!Array.isArray(item.content)) continue;
+      for (const block of item.content) {
+        if (!isRecord(block)) continue;
+        const type = block.type;
+        if ((type === "text" || type === "output_text") && typeof block.text === "string") {
+          parts.push(block.text);
+        }
+      }
+    }
+    return normalizeText(parts);
+  }
+
+  return null;
 }
 
 /**

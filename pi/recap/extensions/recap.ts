@@ -35,6 +35,7 @@ import {
 import {
   buildConversationText,
   buildRecapPrompt,
+  extractRecapText,
   RECAP_SYSTEM_PROMPT,
 } from "../lib/summarize.ts";
 
@@ -85,18 +86,87 @@ function resolveModelObject(
   return null;
 }
 
-async function resolveApiKey(
-  ctx: { modelRegistry?: { getApiKey: (model: unknown) => Promise<string | null | undefined> } },
-  registryModel: unknown | null,
-): Promise<string | undefined> {
-  if (!registryModel || !ctx.modelRegistry) return undefined;
-  try {
-    const key = await ctx.modelRegistry.getApiKey(registryModel);
-    if (typeof key === "string" && key.trim().length > 0) return key;
-  } catch {
-    // Best-effort: continue without an API key when the provider can resolve auth elsewhere.
+type RecapAuth = {
+  apiKey?: string;
+  headers?: Record<string, string>;
+};
+
+type RecapAuthResult =
+  | { ok: true; apiKey?: string; headers?: Record<string, string> }
+  | { ok: false; error?: string };
+
+type RecapModelRegistry = {
+  getApiKey: (model: unknown) => Promise<string | null | undefined>;
+  getApiKeyAndHeaders?: (model: unknown) => Promise<RecapAuthResult | null | undefined>;
+};
+
+type RecapAuthContext = {
+  modelRegistry?: RecapModelRegistry;
+};
+
+type RecapGenerationResult =
+  | { ok: true; summary: string }
+  | { ok: false; cancelled?: boolean; error?: string };
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isAllowedAuthHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === "authorization" || lower === "api-key" || lower.startsWith("x-");
+}
+
+function sanitizeAuthHeaders(
+  headers: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!headers) return undefined;
+
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (isAllowedAuthHeader(key) && isNonEmptyString(value)) {
+      sanitized[key] = value;
+    }
   }
-  return undefined;
+
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function hasAuth(auth: RecapAuth): boolean {
+  return isNonEmptyString(auth.apiKey) || auth.headers !== undefined;
+}
+
+async function resolveAuth(
+  ctx: RecapAuthContext,
+  registryModel: unknown | null,
+): Promise<RecapAuth> {
+  if (!registryModel || !ctx.modelRegistry) return {};
+
+  try {
+    if (typeof ctx.modelRegistry.getApiKeyAndHeaders === "function") {
+      const result = await ctx.modelRegistry.getApiKeyAndHeaders(registryModel);
+      if (result?.ok) {
+        return {
+          apiKey: isNonEmptyString(result.apiKey) ? result.apiKey : undefined,
+          headers: sanitizeAuthHeaders(result.headers),
+        };
+      }
+    }
+
+    const key = await ctx.modelRegistry.getApiKey(registryModel);
+    if (isNonEmptyString(key)) return { apiKey: key };
+  } catch {
+    // Best-effort: continue without explicit auth when the provider can resolve it elsewhere.
+  }
+
+  return {};
+}
+
+async function hasRegistryAuth(
+  ctx: RecapAuthContext,
+  registryModel: unknown | null,
+): Promise<boolean> {
+  return hasAuth(await resolveAuth(ctx, registryModel));
 }
 
 export default function(pi: ExtensionAPI) {
@@ -171,14 +241,7 @@ export default function(pi: ExtensionAPI) {
             registryModelByKey.get(key) ??
             ctx.modelRegistry.find(model.provider, model.id);
           if (!found) return false;
-          try {
-            const apiKey = await ctx.modelRegistry.getApiKey(
-              found as Parameters<typeof ctx.modelRegistry.getApiKey>[0],
-            );
-            return apiKey !== undefined && apiKey !== null && apiKey !== "";
-          } catch {
-            return false;
-          }
+          return hasRegistryAuth(ctx, found);
         })();
 
         apiKeyCache.set(key, check);
@@ -216,17 +279,25 @@ export default function(pi: ExtensionAPI) {
       }
 
       // Phase 1: Show spinner overlay while generating
-      const summary = await ctx.ui.custom<string | null>(
+      const generation = await ctx.ui.custom<RecapGenerationResult>(
         (tui, theme, _kb, done) => {
           const loader = new BorderedLoader(
             tui,
             theme,
             `Generating recap via ${resolvedModel.provider}/${resolvedModel.id}...`,
           );
-          loader.onAbort = () => done(null);
 
-          const generate = async () => {
-            const apiKey = await resolveApiKey(
+          let settled = false;
+          const finish = (result: RecapGenerationResult) => {
+            if (settled) return;
+            settled = true;
+            done(result);
+          };
+
+          loader.onAbort = () => finish({ ok: false, cancelled: true });
+
+          const generate = async (): Promise<RecapGenerationResult> => {
+            const auth = await resolveAuth(
               ctx,
               resolvedModelObject.registryModel,
             );
@@ -244,31 +315,47 @@ export default function(pi: ExtensionAPI) {
                 systemPrompt: RECAP_SYSTEM_PROMPT,
                 messages: [userMessage],
               },
-              { apiKey, signal: loader.signal, maxTokens: 1024 },
+              { ...auth, signal: loader.signal, maxTokens: 1024 },
             );
 
-            if (response.stopReason === "aborted") return null;
+            if (response.stopReason === "aborted") {
+              return { ok: false, cancelled: true };
+            }
 
-            return response.content
-              .filter(
-                (c): c is { type: "text"; text: string } => c.type === "text",
-              )
-              .map((c) => c.text)
-              .join("\n");
+            const summary = extractRecapText(response);
+            if (!summary) {
+              return {
+                ok: false,
+                error: "The recap model returned no text content.",
+              };
+            }
+
+            return { ok: true, summary };
           };
 
           generate()
-            .then(done)
-            .catch(() => done(null));
+            .then(finish)
+            .catch((error) => finish({
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            }));
 
           return loader;
         },
         { overlay: true },
       );
 
-      if (summary === null) {
+      if (!generation.ok) {
+        if (!generation.cancelled) {
+          ctx.ui.notify(
+            `Failed to generate recap: ${generation.error ?? "unknown error"}`,
+            "error",
+          );
+        }
         return;
       }
+
+      const { summary } = generation;
 
       // Phase 2: Show the rendered recap
       await ctx.ui.custom<void>(
