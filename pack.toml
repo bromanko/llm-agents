@@ -1,8 +1,0 @@
-[pack]
-name = "llm-agents-shared-gascity"
-schema = 2
-version = "0.1.0"
-
-[imports.planned_work_jj]
-source = "./gascity/packs/workflows/planned-work-jj"
-export = true
