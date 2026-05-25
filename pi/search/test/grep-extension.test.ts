@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import registerGrepExtension, { buildPathError, createGrepToolDefinition, type GrepToolDeps, type MultiPathValidator } from "../extensions/grep.ts";
-import { DEFAULT_GREP_LIMIT } from "../lib/constants.ts";
+import { DEFAULT_GREP_LIMIT, GREP_MAX_COLUMNS, MAX_GREP_LIMIT, MAX_GREP_OUTPUT_CHARS, MAX_GREP_RESULT_LINE_CHARS } from "../lib/constants.ts";
 import type { GrepToolParams, MultiPathValidationResult, PathValidationResult, RgExecutor, RgResult, SinglePathValidator } from "../lib/types.ts";
 
 type GrepTool = ReturnType<typeof createGrepToolDefinition>;
@@ -187,6 +187,17 @@ test("content-mode args normalize context and include glob, case, hidden, and ig
   assert.equal(args[globIndex + 1], "*.ts");
 });
 
+test("content mode caps long lines at the ripgrep layer", async () => {
+  const capture = createCapturingExecutor();
+  const tool = createGrepToolDefinition({ rgExecutor: capture.executor });
+
+  await executeGrep(tool, { pattern: "Foo" });
+
+  const args = capture.getArgs();
+  assert.equal(args[args.indexOf("--max-columns") + 1], String(GREP_MAX_COLUMNS));
+  assert.ok(args.includes("--max-columns-preview"));
+});
+
 test("outputMode files_with_matches passes -l flag", async () => {
   const capture = createCapturingExecutor();
   const tool = createGrepToolDefinition({ rgExecutor: capture.executor });
@@ -332,6 +343,48 @@ test("omitting limit uses the default grep page size", async () => {
     offset: 0,
     totalMatchCount: undefined,
   });
+});
+
+test("requested grep limit is capped to the safe maximum", async () => {
+  const lines = Array.from({ length: MAX_GREP_LIMIT + 20 }, (_, index) => `file:${index + 1}:foo`);
+  const tool = createGrepToolDefinition({
+    rgExecutor: async () => ({ lines, matched: true, error: null }),
+  });
+
+  const result = await executeGrep(tool, { pattern: "foo", limit: MAX_GREP_LIMIT + 20 });
+  assert.equal(result.details?.returnedCount, MAX_GREP_LIMIT);
+  assert.equal(result.details?.nextOffset, MAX_GREP_LIMIT);
+  assert.match(getText(result), new RegExp(`offset=${MAX_GREP_LIMIT}`));
+});
+
+test("long grep result lines are truncated before returning content", async () => {
+  const longLine = `file.ts:1:${"x".repeat(MAX_GREP_RESULT_LINE_CHARS + 200)}`;
+  const tool = createGrepToolDefinition({
+    rgExecutor: async () => ({ lines: [longLine], matched: true, error: null }),
+  });
+
+  const result = await executeGrep(tool, { pattern: "x", limit: 1 });
+  const [item] = result.details?.items ?? [];
+  assert.ok(item);
+  assert.ok(item.length <= MAX_GREP_RESULT_LINE_CHARS, `Expected item length <= ${MAX_GREP_RESULT_LINE_CHARS}, got ${item.length}`);
+  assert.match(item, /truncated \d+ chars/);
+  assert.ok(getText(result).length < longLine.length);
+  assert.match(getText(result), /Output safety: truncated 1 long result line/);
+});
+
+test("grep output budget stops an oversized page before returning it", async () => {
+  const longBody = "x".repeat(MAX_GREP_RESULT_LINE_CHARS + 200);
+  const lines = Array.from({ length: MAX_GREP_LIMIT }, (_, index) => `file${index}.ts:1:${longBody}`);
+  const tool = createGrepToolDefinition({
+    rgExecutor: async () => ({ lines, matched: true, error: null }),
+  });
+
+  const result = await executeGrep(tool, { pattern: "x", limit: MAX_GREP_LIMIT });
+  const returnedCount = result.details?.returnedCount ?? 0;
+  assert.ok(returnedCount < MAX_GREP_LIMIT, `Expected the output budget to return fewer than ${MAX_GREP_LIMIT} items`);
+  assert.equal(result.details?.nextOffset, returnedCount);
+  assert.match(getText(result), /Output safety: omitted \d+ result lines? from this page/);
+  assert.ok(getText(result).length <= MAX_GREP_OUTPUT_CHARS + 1_000);
 });
 
 test("type field passes through to rg --type", async () => {

@@ -1,7 +1,14 @@
 import os from "node:os";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-import { buildSkipGlobArgs, DEFAULT_GREP_LIMIT } from "../lib/constants.ts";
+import {
+  buildSkipGlobArgs,
+  DEFAULT_GREP_LIMIT,
+  GREP_MAX_COLUMNS,
+  MAX_GREP_LIMIT,
+  MAX_GREP_OUTPUT_CHARS,
+  MAX_GREP_RESULT_LINE_CHARS,
+} from "../lib/constants.ts";
 import { getCwd } from "../lib/execution-context.ts";
 import { paginate, normalizeOffset } from "../lib/pagination.ts";
 import { validatePath, validatePaths } from "../lib/path-suggest.ts";
@@ -96,7 +103,7 @@ function buildGrepArgs(params: GrepToolParams, scopes: string[]): string[] {
   const context = normalizeContext(params.context);
 
   if (outputMode === "content") {
-    args.push("--no-heading", "-n", "-H");
+    args.push("--no-heading", "-n", "-H", "--max-columns", String(GREP_MAX_COLUMNS), "--max-columns-preview");
     if (context !== undefined) {
       args.push("-C", String(context));
     }
@@ -178,6 +185,116 @@ function createDetails(mode: string, scope: string, items: string[], totalCount:
     offset,
     totalMatchCount,
   };
+}
+
+interface SafeGrepPage {
+  items: string[];
+  totalCount: number;
+  truncated: boolean;
+  nextOffset: number | undefined;
+  lineTruncatedCount: number;
+  budgetTruncated: boolean;
+  omittedForBudget: number;
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return count === 1 ? singular : plural;
+}
+
+function truncateLineToChars(line: string, maxChars = MAX_GREP_RESULT_LINE_CHARS): { text: string; truncated: boolean } {
+  if (line.length <= maxChars) return { text: line, truncated: false };
+  if (maxChars <= 1) return { text: "…".slice(0, Math.max(0, maxChars)), truncated: true };
+
+  let omitted = line.length - maxChars;
+  let suffix = `… [truncated ${omitted} ${pluralize(omitted, "char")}]`;
+  let keepChars = maxChars - suffix.length;
+
+  if (keepChars < 1) {
+    return { text: `${line.slice(0, maxChars - 1)}…`, truncated: true };
+  }
+
+  omitted = line.length - keepChars;
+  suffix = `… [truncated ${omitted} ${pluralize(omitted, "char")}]`;
+  keepChars = maxChars - suffix.length;
+
+  if (keepChars < 1) {
+    return { text: `${line.slice(0, maxChars - 1)}…`, truncated: true };
+  }
+
+  return { text: `${line.slice(0, keepChars)}${suffix}`, truncated: true };
+}
+
+function applyGrepOutputSafety(items: string[], totalCount: number, offset: number): SafeGrepPage {
+  const safeItems: string[] = [];
+  let lineTruncatedCount = 0;
+  let budgetTruncated = false;
+  let omittedForBudget = 0;
+  let usedChars = 0;
+
+  for (let index = 0; index < items.length; index += 1) {
+    const bounded = truncateLineToChars(items[index]);
+    const separatorChars = safeItems.length === 0 ? 0 : 1;
+    const nextUsedChars = usedChars + separatorChars + bounded.text.length;
+    if (nextUsedChars > MAX_GREP_OUTPUT_CHARS) {
+      budgetTruncated = true;
+      omittedForBudget = items.length - index;
+      break;
+    }
+
+    if (bounded.truncated) lineTruncatedCount += 1;
+    safeItems.push(bounded.text);
+    usedChars = nextUsedChars;
+  }
+
+  const nextOffset = offset + safeItems.length < totalCount ? offset + safeItems.length : undefined;
+
+  return {
+    items: safeItems,
+    totalCount,
+    truncated: nextOffset !== undefined,
+    nextOffset,
+    lineTruncatedCount,
+    budgetTruncated,
+    omittedForBudget,
+  };
+}
+
+function buildStandardSummary(items: string[], totalCount: number, offset: number, nextOffset: number | undefined, truncated: boolean): string {
+  if (totalCount === 0) {
+    return "0 results.";
+  }
+
+  if (items.length === 0 && offset > 0) {
+    return `No results on this page. Offset=${offset} is past the end of ${totalCount} total results.`;
+  }
+
+  if (truncated && nextOffset != null) {
+    const start = offset + 1;
+    const end = offset + items.length;
+    return `Showing ${start}–${end} of ${totalCount} results. Use offset=${nextOffset} to continue.`;
+  }
+
+  return `${totalCount} results.`;
+}
+
+function buildSafetyNotes(page: SafeGrepPage): string[] {
+  const notes: string[] = [];
+
+  if (page.lineTruncatedCount > 0) {
+    notes.push(`Output safety: truncated ${page.lineTruncatedCount} long result ${pluralize(page.lineTruncatedCount, "line")} to ${MAX_GREP_RESULT_LINE_CHARS} characters.`);
+  }
+
+  if (page.budgetTruncated) {
+    const continuation = page.nextOffset != null ? ` Use offset=${page.nextOffset} to continue.` : "";
+    notes.push(`Output safety: omitted ${page.omittedForBudget} result ${pluralize(page.omittedForBudget, "line")} from this page after ${MAX_GREP_OUTPUT_CHARS} characters.${continuation}`);
+  }
+
+  return notes;
+}
+
+function addSafetyNotes(summaryLine: string, page: SafeGrepPage): string {
+  const notes = buildSafetyNotes(page);
+  return notes.length === 0 ? summaryLine : [...notes, summaryLine].join("\n");
 }
 
 function shortenPath(p: string): string {
@@ -301,27 +418,31 @@ export function createGrepToolDefinition(deps: GrepToolDeps = {}) {
         limit: params.limit,
         offset,
         defaultLimit: DEFAULT_GREP_LIMIT,
+        maxLimit: MAX_GREP_LIMIT,
       });
+      const safePage = applyGrepOutputSafety(page.items, page.totalCount, offset);
       const outputMode = params.outputMode ?? "content";
       const mode = `grep ${outputMode}`;
       const totalMatchCount = outputMode === "count" ? sumCountModeMatches(rgResult.lines) : undefined;
       const summaryLine = outputMode === "count"
-        ? buildCountModeSummary(page.items, page.totalCount, totalMatchCount ?? 0, offset, page.nextOffset, page.truncated)
-        : undefined;
+        ? addSafetyNotes(buildCountModeSummary(safePage.items, safePage.totalCount, totalMatchCount ?? 0, offset, safePage.nextOffset, safePage.truncated), safePage)
+        : buildSafetyNotes(safePage).length > 0
+          ? addSafetyNotes(buildStandardSummary(safePage.items, safePage.totalCount, offset, safePage.nextOffset, safePage.truncated), safePage)
+          : undefined;
       const text = formatResultEnvelope({
         mode,
         scope,
-        items: page.items,
-        totalCount: page.totalCount,
-        truncated: page.truncated,
-        nextOffset: page.nextOffset,
+        items: safePage.items,
+        totalCount: safePage.totalCount,
+        truncated: safePage.truncated,
+        nextOffset: safePage.nextOffset,
         offset,
         summaryLine,
       });
 
       return {
         content: [{ type: "text" as const, text }],
-        details: createDetails(mode, scope, page.items, page.totalCount, offset, page.nextOffset, page.truncated, totalMatchCount),
+        details: createDetails(mode, scope, safePage.items, safePage.totalCount, offset, safePage.nextOffset, safePage.truncated, totalMatchCount),
       };
     },
 

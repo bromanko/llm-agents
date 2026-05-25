@@ -4,6 +4,7 @@ export interface PaginationOptions {
   limit?: number;
   offset?: number;
   defaultLimit?: number;
+  maxLimit?: number;
 }
 
 export interface PaginationResult<T> {
