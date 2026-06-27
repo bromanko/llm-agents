@@ -9,7 +9,7 @@ export interface ExecResult {
  * Options accepted by the exec stub.
  *
  * Mirrors the shape of the real `ExecOptions` exported by
- * `@mariozechner/pi-coding-agent` without importing it (the package is not
+ * `@earendil-works/pi-coding-agent` without importing it (the package is not
  * an installed npm dependency — see the comment on MockExtensionAPI below).
  * Adding fields here when the real API changes keeps the two in sync and
  * prevents `options: any` from silently accepting invalid shapes.
@@ -69,7 +69,7 @@ type ExecFn = (
  * Stub implementation of the pi ExtensionAPI used in tests.
  *
  * Why not import the real `ExtensionAPI` type here?
- * `@mariozechner/pi-coding-agent` is not an installed npm dependency — it is
+ * `@earendil-works/pi-coding-agent` is not an installed npm dependency — it is
  * injected by the pi runtime at startup and is therefore unavailable to plain
  * `node` test runs. Importing it would break IDE type-checking and any CI that
  * runs tests without pi present.

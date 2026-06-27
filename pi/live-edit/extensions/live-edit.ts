@@ -15,8 +15,8 @@
  * and the widget updates live via fs.watch when the file changes on disk.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { highlightCode, getLanguageFromPath } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
 
 import { truncateToWidth, visibleWidth, type TUI } from "../../lib/tui-shim.ts";
 import * as fs from "node:fs";

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { loadResolvedConfig } from "../lib/config.ts";
 import { createServerManager, type ManagedServer, type ServerManager } from "../lib/server-manager.ts";

@@ -1,6 +1,6 @@
 import { stat as fsStat } from "node:fs/promises";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   executeEnhancedTextRead,
   isImagePath,
@@ -83,7 +83,7 @@ const IMAGE_OMITTED_TEXT = "[Image omitted: could not be resized below the inlin
 const MAX_INLINE_IMAGE_RETRY_FILE_BYTES = 3 * 1024 * 1024;
 
 async function createDefaultImageReadFallback(cwd: string, options?: { autoResizeImages?: boolean }) {
-  const module = await import("@mariozechner/pi-coding-agent");
+  const module = await import("@earendil-works/pi-coding-agent");
   return module.createReadToolDefinition(cwd, options);
 }
 

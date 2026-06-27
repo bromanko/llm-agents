@@ -71,7 +71,7 @@ function setupToolCallHandler(
   const pi = createMockExtensionAPI();
   pi.execMock.fn = async () => execResult;
 
-  // `@mariozechner/pi-coding-agent` is not an installed npm package, so we
+  // `@earendil-works/pi-coding-agent` is not an installed npm package, so we
   // cannot import ExtensionAPI directly. `Parameters<...>[0]` derives the
   // exact expected type from the function under test; `as unknown as T` is
   // safer than `as any` because subsequent usage of the cast value is still

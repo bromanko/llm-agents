@@ -59,7 +59,7 @@ let TextImpl: new (...args: any[]) => TextLikeComponent = FallbackText;
 let MarkdownImpl: new (...args: any[]) => TextLikeComponent = FallbackMarkdown;
 
 try {
-  const tui = await import("@mariozechner/pi-tui");
+  const tui = await import("@earendil-works/pi-tui");
   if (typeof tui.truncateToWidth === "function") {
     truncateImpl = tui.truncateToWidth;
   }

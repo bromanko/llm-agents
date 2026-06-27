@@ -20,9 +20,9 @@
  *   8. User picks: Fix / Fix with instructions / Skip / Stop
  */
 
-import type { UserMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { AutocompleteItem } from "@mariozechner/pi-tui";
+import type { UserMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 
 import { type Finding, parseFindings } from "../lib/parser.ts";
@@ -223,7 +223,7 @@ let tuiRuntimePromise: Promise<TuiRuntime> | null = null;
 
 async function getPiAiRuntime(): Promise<PiAiRuntime> {
   if (!piAiRuntimePromise) {
-    piAiRuntimePromise = import("@mariozechner/pi-ai").then(
+    piAiRuntimePromise = import("@earendil-works/pi-ai").then(
       ({ complete }) => ({ complete }),
     );
   }
@@ -232,7 +232,7 @@ async function getPiAiRuntime(): Promise<PiAiRuntime> {
 
 async function getCodingAgentRuntime(): Promise<CodingAgentRuntime> {
   if (!codingAgentRuntimePromise) {
-    codingAgentRuntimePromise = import("@mariozechner/pi-coding-agent").then(
+    codingAgentRuntimePromise = import("@earendil-works/pi-coding-agent").then(
       ({ BorderedLoader }) => ({ BorderedLoader }),
     );
   }
@@ -241,7 +241,7 @@ async function getCodingAgentRuntime(): Promise<CodingAgentRuntime> {
 
 async function getTuiRuntime(): Promise<TuiRuntime> {
   if (!tuiRuntimePromise) {
-    tuiRuntimePromise = import("@mariozechner/pi-tui").then(
+    tuiRuntimePromise = import("@earendil-works/pi-tui").then(
       ({ Key, matchesKey, truncateToWidth }) => ({
         Key,
         matchesKey,
@@ -337,7 +337,7 @@ let rawStdoutWriterPromise: Promise<RawStdoutWriter> | null = null;
 let reviewStdoutFallbackWarned = false;
 
 const defaultOutputGuardModuleLoader: OutputGuardModuleLoader = async () => {
-  const packageEntryUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
+  const packageEntryUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
   const outputGuardUrl = new URL("./core/output-guard.js", packageEntryUrl).href;
   return import(outputGuardUrl);
 };

@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { AutocompleteItem } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { parseCommandArgs } from "../lib/command-args.ts";
 import { resolveDateRange } from "../lib/date-range.ts";
 import { scanSessionFiles } from "../lib/scan-sessions.ts";
@@ -209,7 +209,7 @@ export default function(pi: ExtensionAPI) {
           return;
         }
 
-        const tuiMod = await import("@mariozechner/pi-tui");
+        const tuiMod = await import("@earendil-works/pi-tui");
 
         await ctx.ui.custom<void>(
           (_tui, theme, _kb, done) => {
@@ -240,8 +240,8 @@ export default function(pi: ExtensionAPI) {
         return;
       }
 
-      const piMod = await import("@mariozechner/pi-coding-agent");
-      const tuiMod = await import("@mariozechner/pi-tui");
+      const piMod = await import("@earendil-works/pi-coding-agent");
+      const tuiMod = await import("@earendil-works/pi-tui");
 
       const sessionsRoot = path.join(piMod.getAgentDir(), "sessions");
       const loader = {

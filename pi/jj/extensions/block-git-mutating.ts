@@ -5,7 +5,7 @@
  * running inside a jj repo, guiding the user to jj equivalents.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isJjRepo } from "../lib/utils.ts";
 
 const MUTATING_GIT_PATTERN =

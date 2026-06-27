@@ -1,7 +1,7 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const skillPath = join(extensionDir, "..", "chrome-devtools-mcp", "SKILL.md");

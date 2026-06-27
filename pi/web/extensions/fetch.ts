@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { fetchUrl, type FetchRequest, type FetchResponse } from "../lib/fetch-core.ts";
 import { truncateToWidth } from "./truncate.ts";
 

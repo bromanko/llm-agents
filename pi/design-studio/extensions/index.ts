@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
 import {
   getMarkdownTheme,
   type AgentToolUpdateCallback,
@@ -13,9 +13,9 @@ import {
   type ExtensionContext,
   type InputEvent,
   type Theme,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "../../lib/tui-shim.ts";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 import {
   formatModelRef,

@@ -8,7 +8,7 @@
  * Works with both jj and git repositories.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * Canonical text fragment that selfci emits when a run is successful.

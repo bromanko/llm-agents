@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerGrepExtension, { buildPathError, createGrepToolDefinition, type GrepToolDeps, type MultiPathValidator } from "../extensions/grep.ts";
 import { DEFAULT_GREP_LIMIT, GREP_MAX_COLUMNS, MAX_GREP_LIMIT, MAX_GREP_OUTPUT_CHARS, MAX_GREP_RESULT_LINE_CHARS } from "../lib/constants.ts";
 import type { GrepToolParams, MultiPathValidationResult, PathValidationResult, RgExecutor, RgResult, SinglePathValidator } from "../lib/types.ts";
@@ -603,7 +603,7 @@ test("renderCall does not show outputMode when content (default)", () => {
 
 test("renderCall truncates header to given width", () => {
   const tool = createGrepToolDefinition();
-  const longPath = "/nix/store/" + "a".repeat(200) + "/lib/node_modules/@mariozechner/pi-coding-agent";
+  const longPath = "/nix/store/" + "a".repeat(200) + "/lib/node_modules/@earendil-works/pi-coding-agent";
   const component = tool.renderCall!({ pattern: "foo", path: longPath });
   const lines = component.render(80);
   assert.equal(lines.length, 1);

@@ -75,7 +75,7 @@ async function loadCompleteFn(): Promise<CompleteFn> {
   if (_completeFnImporter) {
     return _completeFnImporter();
   }
-  const { complete } = await import("@mariozechner/pi-ai");
+  const { complete } = await import("@earendil-works/pi-ai");
   return complete as CompleteFn;
 }
 
