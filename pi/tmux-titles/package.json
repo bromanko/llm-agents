@@ -1,14 +1,19 @@
 {
   "name": "@bromanko/pi-tmux-titles",
   "version": "1.0.0",
+  "type": "module",
   "description": "Update tmux window title with pi status indicators showing current activity",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "license": "Apache-2.0",
   "author": {
     "name": "bromanko",
     "email": "hello@bromanko.com"
   },
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   }
 }
